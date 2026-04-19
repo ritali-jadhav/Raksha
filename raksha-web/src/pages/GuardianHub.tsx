@@ -147,6 +147,8 @@ export default function GuardianHub() {
     }).setView([trackingUser.lat || 20.5937, trackingUser.lng || 78.9629], trackingUser.lat ? 15 : 5);
 
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(leafletMap.current);
+    // Force layout recalc after WebView renders the modal
+    setTimeout(() => leafletMap.current?.invalidateSize(), 150);
 
     if (trackingUser.lat && trackingUser.lng) {
       markerRef.current = L.circleMarker([trackingUser.lat, trackingUser.lng], {

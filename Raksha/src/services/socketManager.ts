@@ -133,13 +133,15 @@ export function emitSOSTriggered(
   userId: string,
   incidentId: string,
   userName: string,
-  triggerType: string
+  triggerType: string,
+  userPhone?: string | null
 ): void {
   emitToGuardians(userId, "sos:triggered", {
     incidentId,
     userName,
     triggerType,
     status: "active",
+    userPhone: userPhone || null,
   });
 }
 

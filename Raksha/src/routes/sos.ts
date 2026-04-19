@@ -85,11 +85,20 @@ router.post("/verify-pin", async (req, res) => {
 
 /**
  * 📍 Location Update + Auto Geofence Check
+ * Accepts both application/json and text/plain bodies (for sendBeacon/keepalive fetch compatibility).
  */
 router.post("/location-update", async (req, res) => {
   try {
     const { userId } = getAuthUser(req);
-    const { lat, lng } = req.body;
+
+    // Normalize body: handle both JSON-parsed object and plain-text string (from old sendBeacon)
+    let body = req.body;
+    if (typeof body === 'string') {
+      try { body = JSON.parse(body); } catch { body = {}; }
+    }
+
+    const lat = body?.lat ?? body?.latitude;
+    const lng = body?.lng ?? body?.longitude;
 
     if (lat == null || lng == null) {
       return res.status(400).json({ error: "Missing lat or lng" });
@@ -108,10 +117,10 @@ router.post("/location-update", async (req, res) => {
       );
     }
 
-    res.json({ success: true, breachResult });
+    return res.json({ success: true, breachResult });
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Location update failed" });
+    console.error('[SOS] Location update error:', err);
+    return res.status(500).json({ error: "Location update failed" });
   }
 });
 

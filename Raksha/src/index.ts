@@ -21,8 +21,15 @@ import communityRouter from "./routes/incidents";
 import analyticsRouter from "./routes/analytics";
 
 const app = express();
-app.use(cors());
+app.use(cors({
+  origin: '*',
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+}));
 app.use(express.json());
+// Also parse text/plain bodies (used by sendBeacon in older WebViews)
+app.use(express.text({ type: 'text/plain' }));
+app.use(express.urlencoded({ extended: true }));
 
 // Create HTTP server (needed for Socket.IO)
 const server = http.createServer(app);

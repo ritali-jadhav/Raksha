@@ -11,7 +11,7 @@ function resolveApiBase(): string {
   return 'http://localhost:4000';
 }
 
-const API_BASE = resolveApiBase();
+export const API_BASE = resolveApiBase();
 
 // ===== Retry & Resilience Configuration =====
 const MAX_RETRIES = 3;
@@ -222,7 +222,8 @@ export const locationApi = {
   update: (lat: number, lng: number) =>
     api('/location/update', { method: 'POST', body: JSON.stringify({ lat, lng }) }),
   heartbeat: () => api('/location/heartbeat', { method: 'POST' }),
-  live: (userId: string) => api(`/live-location/${userId}`),
+  // Unwrap { success: true, location: { lat, lng, updatedAt } } → top-level { lat, lng, updatedAt }
+  live: (userId: string) => api(`/live-location/${userId}`).then((r: any) => r?.location || r),
 };
 
 export const evidenceApi = {

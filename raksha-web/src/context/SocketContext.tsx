@@ -35,6 +35,7 @@ export interface SOSAlert {
   lng?: number;
   mediaUrl?: string;
   mediaType?: string;
+  userPhone?: string | null; // user's real phone number for guardian callback
 }
 
 const SocketContext = createContext<SocketState>({
@@ -106,6 +107,7 @@ export function SocketProvider({ children }: { children: ReactNode }) {
           triggerType: data.triggerType,
           status: 'active',
           timestamp: data.timestamp,
+          userPhone: data.userPhone || null,
         }];
       });
     });

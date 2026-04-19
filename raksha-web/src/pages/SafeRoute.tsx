@@ -1,6 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import L from 'leaflet';
-import { api } from '../api/client';
 import { useToast } from '../context/ToastContext';
 
 interface Route {
@@ -72,6 +71,8 @@ export default function SafeRoute() {
 
         // Zoom controls top-right
         L.control.zoom({ position: 'topright' }).addTo(leafletMap.current);
+        // Force layout recalc after WebView render
+        setTimeout(() => leafletMap.current?.invalidateSize(), 150);
 
         return () => {
             if (watchId.current !== null) navigator.geolocation.clearWatch(watchId.current);

@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { locationApi, sosApi } from '../api/client';
+import { locationApi, sosApi, API_BASE } from '../api/client';
 import { useSocket } from '../context/SocketContext';
 
 interface BackgroundLocationState {
@@ -13,7 +13,8 @@ interface BackgroundLocationState {
 
 /**
  * Hook for continuous location tracking that survives tab backgrounding.
- * Uses Web Lock API to prevent throttling + sendBeacon for tab close.
+ * Uses Web Lock API to prevent throttling + keepalive fetch for tab close.
+ * sendBeacon replaced with fetch({keepalive:true}) to support auth headers in APK.
  */
 export function useBackgroundLocation(active: boolean) {
   const [state, setState] = useState<BackgroundLocationState>({
@@ -24,6 +25,8 @@ export function useBackgroundLocation(active: boolean) {
   const watchIdRef = useRef<number | null>(null);
   const intervalRef = useRef<ReturnType<typeof setInterval> | undefined>(undefined);
   const lockRef = useRef<any>(null);
+  // Keep a ref to latest coords so beforeunload handler always has fresh values (no stale closure)
+  const latestCoordsRef = useRef<{ lat: number; lng: number } | null>(null);
 
   // Track page visibility
   useEffect(() => {
@@ -36,6 +39,8 @@ export function useBackgroundLocation(active: boolean) {
 
   const sendLocation = useCallback((lat: number, lng: number) => {
     setState(prev => ({ ...prev, lat, lng, isTracking: true }));
+    // Keep ref fresh for beforeunload
+    latestCoordsRef.current = { lat, lng };
 
     // Send to server APIs
     sosApi.locationUpdate(lat, lng).catch(() => {});
@@ -105,11 +110,21 @@ export function useBackgroundLocation(active: boolean) {
         .catch(() => {});
     }
 
-    // Send location on page close via sendBeacon
+    // Send location on page close using keepalive fetch (works in APK + browser).
+    // sendBeacon can't send auth headers, so we use fetch with keepalive:true instead.
     const handleBeforeUnload = () => {
-      if (state.lat != null && state.lng != null) {
-        const data = JSON.stringify({ lat: state.lat, lng: state.lng });
-        navigator.sendBeacon?.('/sos/location-update', data);
+      const coords = latestCoordsRef.current;
+      const token = localStorage.getItem('raksha_token');
+      if (coords && token) {
+        fetch(`${API_BASE}/sos/location-update`, {
+          method: 'POST',
+          keepalive: true,
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`,
+          },
+          body: JSON.stringify({ lat: coords.lat, lng: coords.lng }),
+        }).catch(() => {});
       }
     };
     window.addEventListener('beforeunload', handleBeforeUnload);

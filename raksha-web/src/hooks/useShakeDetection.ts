@@ -1,8 +1,8 @@
 import { useEffect, useRef, useCallback } from 'react';
 
-const SHAKE_THRESHOLD = 15;   // m/s² delta to count as a shake
-const SHAKE_COUNT_NEEDED = 4; // shakes needed within window
-const SHAKE_WINDOW_MS = 1500; // time window
+const SHAKE_THRESHOLD = 15;
+const SHAKE_COUNT_NEEDED = 4;
+const SHAKE_WINDOW_MS = 1500;
 
 export function useShakeDetection(onShake: () => void, enabled: boolean) {
     const lastAccel = useRef<{ x: number; y: number; z: number } | null>(null);
@@ -15,12 +15,14 @@ export function useShakeDetection(onShake: () => void, enabled: boolean) {
     const handleMotion = useCallback((e: DeviceMotionEvent) => {
         const accel = e.accelerationIncludingGravity;
         if (!accel) return;
-        const { x = 0, y = 0, z = 0 } = accel;
+        const ax = accel.x ?? 0;
+        const ay = accel.y ?? 0;
+        const az = accel.z ?? 0;
 
         if (lastAccel.current) {
-            const delta = Math.abs(x - lastAccel.current.x)
-                + Math.abs(y - lastAccel.current.y)
-                + Math.abs(z - lastAccel.current.z);
+            const delta = Math.abs(ax - lastAccel.current.x)
+                + Math.abs(ay - lastAccel.current.y)
+                + Math.abs(az - lastAccel.current.z);
 
             if (delta > SHAKE_THRESHOLD) {
                 const now = Date.now();
@@ -36,12 +38,11 @@ export function useShakeDetection(onShake: () => void, enabled: boolean) {
                 }
             }
         }
-        lastAccel.current = { x: x ?? 0, y: y ?? 0, z: z ?? 0 };
+        lastAccel.current = { x: ax, y: ay, z: az };
     }, []);
 
     useEffect(() => {
         if (!enabled) return;
-        // iOS 13+ requires permission
         const requestAndListen = async () => {
             const dme = DeviceMotionEvent as any;
             if (typeof dme.requestPermission === 'function') {

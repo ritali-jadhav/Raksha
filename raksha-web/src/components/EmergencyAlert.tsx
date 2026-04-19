@@ -77,6 +77,8 @@ export default function EmergencyAlert() {
 
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 })
       .addTo(leafletMap.current);
+    // Force layout recalc in WebView/APK
+    setTimeout(() => leafletMap.current?.invalidateSize(), 150);
 
     if (activeAlert.lat && activeAlert.lng) {
       markerRef.current = L.circleMarker([activeAlert.lat, activeAlert.lng], {
@@ -253,8 +255,9 @@ export default function EmergencyAlert() {
           <button
             className="emergency-action-btn call"
             onClick={() => {
-              // Try to find phone - fallback to emergency
-              window.location.href = 'tel:112';
+              // Use real phone number from alert if available, fallback to emergency
+              const phone = (activeAlert as any).userPhone || '112';
+              window.location.href = `tel:${phone}`;
             }}
           >
             <span>📞</span>

@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import L from 'leaflet';
 import { locationApi } from '../api/client';
 import { useToast } from '../context/ToastContext';
+import { useNearbyPlaces } from '../hooks/useNearbyPlaces';
 
 export default function Tracking() {
   const { showToast } = useToast();
@@ -9,16 +10,20 @@ export default function Tracking() {
   const leafletMap = useRef<L.Map | null>(null);
   const marker = useRef<L.CircleMarker | null>(null);
   const path = useRef<L.Polyline | null>(null);
+  const nearbyMarkersRef = useRef<L.CircleMarker[]>([]);
   const [tracking, setTracking] = useState(false);
   const [coords, setCoords] = useState<{ lat: number; lng: number } | null>(null);
   const [distance, setDistance] = useState(0);
   const [duration, setDuration] = useState(0);
   const [speed, setSpeed] = useState(0);
+  const [nearbyCount, setNearbyCount] = useState(0);
   const watchId = useRef<number | null>(null);
   const positions = useRef<[number, number][]>([]);
   const startTime = useRef<number | null>(null);
   const durationInterval = useRef<ReturnType<typeof setInterval> | undefined>(undefined);
   const prevPos = useRef<[number, number] | null>(null);
+
+  const { fetchNearby, addMarkersToMap } = useNearbyPlaces();
 
   const haversineM = (lat1: number, lng1: number, lat2: number, lng2: number) => {
     const R = 6371000, toR = (d: number) => d * Math.PI / 180;
@@ -32,6 +37,8 @@ export default function Tracking() {
     leafletMap.current = L.map(mapRef.current, { zoomControl: false, attributionControl: false }).setView([20.5937, 78.9629], 5);
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(leafletMap.current);
     L.control.zoom({ position: 'topright' }).addTo(leafletMap.current);
+    // Force re-measure after WebView layout is complete
+    setTimeout(() => leafletMap.current?.invalidateSize(), 100);
 
     navigator.geolocation?.getCurrentPosition(
       pos => {
@@ -109,6 +116,19 @@ export default function Tracking() {
     showToast('Tracking stopped');
   };
 
+  const findNearbySafety = async () => {
+    if (!coords) { showToast('Location not yet available', 'error'); return; }
+    showToast('Finding nearby hospitals & police stations...');
+    const nearby = await fetchNearby(coords.lat, coords.lng, 2000);
+    if (leafletMap.current && nearby.length > 0) {
+      nearbyMarkersRef.current = addMarkersToMap(leafletMap.current, nearby, nearbyMarkersRef.current);
+      setNearbyCount(nearby.length);
+      showToast(`Found ${nearby.length} safety resource${nearby.length !== 1 ? 's' : ''} nearby`);
+    } else if (nearby.length === 0) {
+      showToast('No hospitals/police found within 2km', 'error');
+    }
+  };
+
   const formatDuration = (s: number) => {
     const m = Math.floor(s / 60), sec = s % 60;
     return `${m}:${sec.toString().padStart(2, '0')}`;
@@ -157,6 +177,30 @@ export default function Tracking() {
               className="guardian-action-btn"
               style={{ marginLeft: 'auto' }}
             >🗺️</a>
+          </div>
+        )}
+
+        {/* Nearby Safety Resources */}
+        <button
+          className="btn btn-secondary btn-sm btn-block"
+          style={{ marginBottom: 10 }}
+          onClick={findNearbySafety}
+          disabled={!coords}
+        >
+          🏥 Find Nearby Safety ({nearbyCount > 0 ? `${nearbyCount} found` : 'Hospitals & Police'})
+        </button>
+
+        {/* Map Legend */}
+        {nearbyCount > 0 && (
+          <div style={{ display: 'flex', gap: 12, marginBottom: 10, fontSize: 11, color: 'var(--text-muted)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+              <span style={{ width: 10, height: 10, borderRadius: '50%', background: '#2ed573', display: 'inline-block' }} />
+              Hospital
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+              <span style={{ width: 10, height: 10, borderRadius: '50%', background: '#3b82f6', display: 'inline-block' }} />
+              Police
+            </div>
           </div>
         )}
 

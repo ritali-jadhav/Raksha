@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import L from 'leaflet';
 import { sosApi } from '../api/client';
 import { useBackgroundLocation } from '../hooks/useBackgroundLocation';
+import { useNearbyPlaces } from '../hooks/useNearbyPlaces';
 import PinPad from '../components/PinPad';
 
 interface SOSActiveProps {
@@ -28,11 +29,14 @@ export default function SOSActive({ incidentId, guardians, onCancelled, triggerS
   const mapRef = useRef<HTMLDivElement>(null);
   const leafletMap = useRef<L.Map | null>(null);
   const marker = useRef<L.CircleMarker | null>(null);
+  const nearbyMarkersRef = useRef<L.CircleMarker[]>([]);
+  const nearbyFetchedRef = useRef(false);
   const audioRef = useRef<AudioContext | null>(null);
   const oscillatorRef = useRef<OscillatorNode | null>(null);
 
   // Background location tracking
   const location = useBackgroundLocation(true);
+  const { fetchNearby, addMarkersToMap } = useNearbyPlaces();
 
   // Main timer
   useEffect(() => {
@@ -66,10 +70,12 @@ export default function SOSActive({ incidentId, guardians, onCancelled, triggerS
         zoomControl: false, attributionControl: false,
       }).setView([20.5937, 78.9629], 5);
       L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(leafletMap.current);
+      // Force re-render in APK WebView (map initially renders at 0px)
+      setTimeout(() => leafletMap.current?.invalidateSize(), 100);
     }
   }, []);
 
-  // Update map with background location
+  // Update map with background location  
   useEffect(() => {
     if (!location.lat || !location.lng || !leafletMap.current) return;
     const latlng: [number, number] = [location.lat, location.lng];
@@ -80,6 +86,16 @@ export default function SOSActive({ incidentId, guardians, onCancelled, triggerS
       marker.current = L.circleMarker(latlng, {
         radius: 8, fillColor: '#ff4757', fillOpacity: 1, color: '#fff', weight: 3,
       }).addTo(leafletMap.current);
+    }
+
+    // Auto-fetch nearby safety resources once when first precise location arrives
+    if (!nearbyFetchedRef.current) {
+      nearbyFetchedRef.current = true;
+      fetchNearby(location.lat, location.lng, 2000).then(nearby => {
+        if (leafletMap.current && nearby.length > 0) {
+          nearbyMarkersRef.current = addMarkersToMap(leafletMap.current, nearby, nearbyMarkersRef.current);
+        }
+      }).catch(() => {});
     }
   }, [location.lat, location.lng]);
 

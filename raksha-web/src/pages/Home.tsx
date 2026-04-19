@@ -1,4 +1,4 @@
-﻿import { useState, useCallback, useEffect, useRef } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { sosApi, locationApi, guardianApi } from '../api/client';
@@ -29,10 +29,18 @@ export default function Home() {
   const [voiceEnabled, setVoiceEnabled] = useState(() => localStorage.getItem('voice_sos') === 'true');
 
   useEffect(() => {
-    guardianApi.myGuardians()
-      .then(r => setGuardians(r.guardians || []))
-      .catch(() => { })
-      .finally(() => setLoading(false));
+    // Load both in-app guardians AND phone-only guardians for accurate count + SOS coverage
+    Promise.all([
+      guardianApi.myGuardians().catch(() => ({ guardians: [] })),
+      guardianApi.phoneGuardians().catch(() => ({ guardians: [] })),
+    ]).then(([inApp, phones]) => {
+      // Merge: in-app guardians have linkId, phone guardians have id
+      const allGuardians = [
+        ...(inApp.guardians || []),
+        ...(phones.guardians || []).map((g: any) => ({ ...g, linkId: g.id, isPhoneOnly: true })),
+      ];
+      setGuardians(allGuardians);
+    }).finally(() => setLoading(false));
   }, []);
 
   const startSOSCountdown = useCallback(() => {
@@ -93,20 +101,46 @@ export default function Home() {
 
   const captureAndUploadMedia = async (incidentId: string) => {
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment', width: 1280, height: 720 } });
-      await new Promise(r => setTimeout(r, 500));
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: 'environment', width: 1280, height: 720 },
+      });
+
       const video = document.createElement('video');
       video.srcObject = stream;
       video.setAttribute('playsinline', 'true');
-      await video.play();
+      video.muted = true;
+
+      // Wait for video to have decoded at least one frame before capturing
+      await new Promise<void>((resolve, reject) => {
+        const timeout = setTimeout(() => resolve(), 3000); // fallback after 3s
+        video.onloadeddata = () => { clearTimeout(timeout); resolve(); };
+        video.onerror = () => { clearTimeout(timeout); reject(new Error('Video load failed')); };
+        video.play().catch(reject);
+      });
+
+      // Wait one extra animation frame to ensure frame is painted
+      await new Promise<void>(r => requestAnimationFrame(() => r()));
+
       const canvas = document.createElement('canvas');
       canvas.width = video.videoWidth || 1280;
       canvas.height = video.videoHeight || 720;
-      canvas.getContext('2d')?.drawImage(video, 0, 0, canvas.width, canvas.height);
+      const ctx = canvas.getContext('2d');
+      if (ctx) ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+      // Cleanup stream
       stream.getTracks().forEach(t => t.stop());
-      const blob = await new Promise<Blob>((resolve) => canvas.toBlob((b) => resolve(b!), 'image/jpeg', 0.85));
-      if (blob) await sosApi.attachMedia(incidentId, blob, 'image');
-    } catch { }
+      video.srcObject = null;
+
+      const blob = await new Promise<Blob>((resolve, reject) =>
+        canvas.toBlob(b => b ? resolve(b) : reject(new Error('Canvas empty')), 'image/jpeg', 0.85)
+      );
+
+      if (blob && blob.size > 1000) { // sanity check: ignore tiny/black blobs
+        await sosApi.attachMedia(incidentId, blob, 'image');
+      }
+    } catch (err) {
+      console.warn('[MEDIA] Capture failed:', err);
+    }
   };
 
   const handleBLESOS = useCallback((data: BLESOSData) => {
@@ -324,13 +358,15 @@ export default function Home() {
         </button>
       ) : (
         <div style={{ display: 'flex', gap: 10, overflowX: 'auto', paddingBottom: 8 }}>
-          {guardians.map((g: any) => (
-            <div key={g.linkId} className="card" style={{ minWidth: 100, textAlign: 'center', flexShrink: 0, padding: '14px 10px' }}>
+          {guardians.map((g: any, idx: number) => (
+            <div key={g.linkId || g.id || idx} className="card" style={{ minWidth: 100, textAlign: 'center', flexShrink: 0, padding: '14px 10px' }}>
               <div className="guardian-avatar" style={{ width: 36, height: 36, fontSize: 14, margin: '0 auto 8px' }}>
                 {g.name?.[0]?.toUpperCase() || '?'}
               </div>
               <div style={{ fontSize: 12, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{g.name}</div>
-              <div style={{ fontSize: 10, color: 'var(--safe)', marginTop: 3 }}>Active</div>
+              <div style={{ fontSize: 10, color: g.isPhoneOnly ? 'var(--info)' : 'var(--safe)', marginTop: 3 }}>
+                {g.isPhoneOnly ? '📞 Phone' : 'Active'}
+              </div>
             </div>
           ))}
           <button className="card" style={{ minWidth: 80, textAlign: 'center', flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}

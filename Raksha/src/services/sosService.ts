@@ -80,10 +80,15 @@ export const createIncident = async (
 
   // Emit real-time WebSocket event to guardians
   let userName = "Unknown";
+  let userPhone: string | null = null;
   try {
     const userDoc = await firestore.collection("users").doc(userId).get();
-    userName = userDoc.exists ? userDoc.data()?.name || "Unknown" : "Unknown";
-    emitSOSTriggered(userId, incidentId, userName, triggerType);
+    if (userDoc.exists) {
+      const userData = userDoc.data();
+      userName = userData?.name || "Unknown";
+      userPhone = userData?.phone || null;
+    }
+    emitSOSTriggered(userId, incidentId, userName, triggerType, userPhone);
   } catch (err) {
     console.error("[SOS] Socket emit failed:", err);
   }

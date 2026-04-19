@@ -12,42 +12,49 @@ app.use(cors({
   allowedHeaders: ["Content-Type", "Authorization"],
 }));
 app.use(express.json());
+// Also parse text/plain bodies (sendBeacon / older WebViews)
 app.use(express.text({ type: "text/plain" }));
 app.use(express.urlencoded({ extended: true }));
 
 // ─── Health Check ─────────────────────────────────────────────────────────────
+// Registered BEFORE all other routes and BEFORE any external service init.
+// Railway pings this during deploy — it must always return 200 immediately.
 app.get("/health", (_req, res) => {
   console.log("[HEALTH] GET /health - OK");
   res.status(200).send("OK");
 });
+// ─────────────────────────────────────────────────────────────────────────────
 
 // ─── HTTP Server ──────────────────────────────────────────────────────────────
+// Create the server immediately — before loading any routes or external services.
+// This guarantees Railway can probe /health the instant the port opens.
 const server = http.createServer(app);
 
-// ─── PORT FIX (FINAL) ─────────────────────────────────────────────────────────
-// 🔥 CRITICAL: log env + force correct binding
+// ─── Port & Binding ───────────────────────────────────────────────────────────
+// Railway provides PORT via environment variable. Bind to 0.0.0.0 (not localhost)
+// so the container port is externally reachable.
+const PORT = process.env.PORT || "8080";
 console.log("ENV PORT VALUE:", process.env.PORT);
 
-const PORT = process.env.PORT ? Number(process.env.PORT) : 8080;
-
-// Fallback only for local dev — Railway will always provide PORT
-if (!PORT) {
-  console.warn("PORT undefined, falling back to 8080");
-}
-
-server.listen(PORT, "0.0.0.0", () => {
-  console.log(`[RAKSHA] Server running on port ${PORT} (HTTP + WebSocket)`);
+server.listen(Number(PORT), "0.0.0.0", () => {
+  console.log(`[RAKSHA] Server running on port ${PORT}`);
   console.log(`[RAKSHA] Health: http://0.0.0.0:${PORT}/health`);
 
+  // ── Load routes & services AFTER port is bound ────────────────────────────
+  // Any failure here will log an error but will NOT kill the server.
+  // /health remains available so Railway does not restart the container.
   loadApp().catch((err) => {
     console.error("[RAKSHA] App initialisation error (server still running):", err);
   });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// loadApp — loads all routes and background services
+// loadApp — loads all routes and background services after server is listening.
+// Wrapped entirely in try/catch so a Firebase or Twilio failure never crashes
+// the server process.
 // ─────────────────────────────────────────────────────────────────────────────
 async function loadApp(): Promise<void> {
+  // ── Socket.IO ──────────────────────────────────────────────────────────────
   try {
     const { initSocketIO } = await import("./services/socketManager");
     initSocketIO(server);
@@ -56,19 +63,21 @@ async function loadApp(): Promise<void> {
     console.error("[RAKSHA] Socket.IO init failed:", err);
   }
 
+  // ── API Routes ─────────────────────────────────────────────────────────────
+  // Each router is loaded individually so one broken import doesn't block others.
   const routes: Array<{ path: string; mod: string }> = [
-    { path: "/auth",          mod: "./routes/auth"        },
-    { path: "/sos",           mod: "./routes/sos"         },
-    { path: "/guardian",      mod: "./routes/guardian"    },
-    { path: "/geofence",      mod: "./routes/geofence"    },
-    { path: "/location",      mod: "./routes/location"    },
-    { path: "/evidence",      mod: "./routes/evidence"    },
-    { path: "/live-location", mod: "./routes/livelocation"},
-    { path: "/push",          mod: "./routes/push"        },
-    { path: "/checkin",       mod: "./routes/checkin"     },
-    { path: "/journey",       mod: "./routes/journey"     },
-    { path: "/community",     mod: "./routes/incidents"   },
-    { path: "/analytics",     mod: "./routes/analytics"   },
+    { path: "/auth", mod: "./routes/auth" },
+    { path: "/sos", mod: "./routes/sos" },
+    { path: "/guardian", mod: "./routes/guardian" },
+    { path: "/geofence", mod: "./routes/geofence" },
+    { path: "/location", mod: "./routes/location" },
+    { path: "/evidence", mod: "./routes/evidence" },
+    { path: "/live-location", mod: "./routes/livelocation" },
+    { path: "/push", mod: "./routes/push" },
+    { path: "/checkin", mod: "./routes/checkin" },
+    { path: "/journey", mod: "./routes/journey" },
+    { path: "/community", mod: "./routes/incidents" },
+    { path: "/analytics", mod: "./routes/analytics" },
   ];
 
   for (const { path, mod } of routes) {
@@ -81,6 +90,7 @@ async function loadApp(): Promise<void> {
     }
   }
 
+  // ── Background Services ────────────────────────────────────────────────────
   try {
     const { startTamperMonitor } = await import("./services/tamperMonitor");
     startTamperMonitor();

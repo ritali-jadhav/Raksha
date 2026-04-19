@@ -3,73 +3,108 @@ import cors from "cors";
 import http from "http";
 import "dotenv/config";
 
-import { initSocketIO } from "./services/socketManager";
-import { startTamperMonitor } from "./services/tamperMonitor";
-import { resumeActiveEscalations } from "./services/escalationService";
-
-import authRouter from "./routes/auth";
-import sosRouter from "./routes/sos";
-import guardianRouter from "./routes/guardian";
-import geofenceRouter from "./routes/geofence";
-import locationRouter from "./routes/location";
-import evidenceRouter from "./routes/evidence";
-import liveLocationRouter from "./routes/livelocation";
-import pushRouter from "./routes/push";
-import checkinRouter from "./routes/checkin";
-import journeyRouter from "./routes/journey";
-import communityRouter from "./routes/incidents";
-import analyticsRouter from "./routes/analytics";
-
+// ─── Express App ──────────────────────────────────────────────────────────────
 const app = express();
+
 app.use(cors({
-  origin: '*',
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization'],
+  origin: "*",
+  methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization"],
 }));
 app.use(express.json());
-// Also parse text/plain bodies (used by sendBeacon in older WebViews)
-app.use(express.text({ type: 'text/plain' }));
+// Also parse text/plain bodies (sendBeacon / older WebViews)
+app.use(express.text({ type: "text/plain" }));
 app.use(express.urlencoded({ extended: true }));
 
-// ─── Health Check ────────────────────────────────────────────────────────────
-// Registered FIRST so Railway health checks always succeed, regardless of
-// whether background services (Firebase, Twilio) have finished initialising.
+// ─── Health Check ─────────────────────────────────────────────────────────────
+// Registered BEFORE all other routes and BEFORE any external service init.
+// Railway pings this during deploy — it must always return 200 immediately.
 app.get("/health", (_req, res) => {
+  console.log("[HEALTH] GET /health - OK");
   res.status(200).send("OK");
 });
 // ─────────────────────────────────────────────────────────────────────────────
 
-// Create HTTP server (needed for Socket.IO)
+// ─── HTTP Server ──────────────────────────────────────────────────────────────
+// Create the server immediately — before loading any routes or external services.
+// This guarantees Railway can probe /health the instant the port opens.
 const server = http.createServer(app);
 
-// Initialize Socket.IO on the HTTP server
-initSocketIO(server);
-
-// ─── API Routes ──────────────────────────────────────────────────────────────
-app.use("/auth", authRouter);
-app.use("/sos", sosRouter);
-app.use("/guardian", guardianRouter);
-app.use("/geofence", geofenceRouter);
-app.use("/location", locationRouter);
-app.use("/evidence", evidenceRouter);
-app.use("/live-location", liveLocationRouter);
-app.use("/push", pushRouter);
-app.use("/checkin", checkinRouter);
-app.use("/journey", journeyRouter);
-app.use("/community", communityRouter);
-app.use("/analytics", analyticsRouter);
-
-// ─── Port & Server Start ─────────────────────────────────────────────────────
-// Railway provides PORT via environment variable. Bind to 0.0.0.0 so the
-// container's port is accessible externally.
+// ─── Port & Binding ───────────────────────────────────────────────────────────
+// Railway provides PORT via environment variable. Bind to 0.0.0.0 (not localhost)
+// so the container port is externally reachable.
 const PORT: number = Number(process.env.PORT) || 4000;
 
-// Start background services (non-blocking — do not await)
-startTamperMonitor();
-resumeActiveEscalations();
-
-// server.listen instead of app.listen — required for Socket.IO
 server.listen(PORT, "0.0.0.0", () => {
-  console.log(`[RAKSHA] Backend running on port ${PORT} (HTTP + WebSocket)`);
-  console.log(`[RAKSHA] Health check: http://0.0.0.0:${PORT}/health`);
+  console.log(`[RAKSHA] Server running on port ${PORT} (HTTP + WebSocket)`);
+  console.log(`[RAKSHA] Health: http://0.0.0.0:${PORT}/health`);
+
+  // ── Load routes & services AFTER port is bound ────────────────────────────
+  // Any failure here will log an error but will NOT kill the server.
+  // /health remains available so Railway does not restart the container.
+  loadApp().catch((err) => {
+    console.error("[RAKSHA] App initialisation error (server still running):", err);
+  });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// loadApp — loads all routes and background services after server is listening.
+// Wrapped entirely in try/catch so a Firebase or Twilio failure never crashes
+// the server process.
+// ─────────────────────────────────────────────────────────────────────────────
+async function loadApp(): Promise<void> {
+  // ── Socket.IO ──────────────────────────────────────────────────────────────
+  try {
+    const { initSocketIO } = await import("./services/socketManager");
+    initSocketIO(server);
+    console.log("[RAKSHA] Socket.IO ready");
+  } catch (err) {
+    console.error("[RAKSHA] Socket.IO init failed:", err);
+  }
+
+  // ── API Routes ─────────────────────────────────────────────────────────────
+  // Each router is loaded individually so one broken import doesn't block others.
+  const routes: Array<{ path: string; mod: string }> = [
+    { path: "/auth",          mod: "./routes/auth"        },
+    { path: "/sos",           mod: "./routes/sos"         },
+    { path: "/guardian",      mod: "./routes/guardian"    },
+    { path: "/geofence",      mod: "./routes/geofence"    },
+    { path: "/location",      mod: "./routes/location"    },
+    { path: "/evidence",      mod: "./routes/evidence"    },
+    { path: "/live-location", mod: "./routes/livelocation"},
+    { path: "/push",          mod: "./routes/push"        },
+    { path: "/checkin",       mod: "./routes/checkin"     },
+    { path: "/journey",       mod: "./routes/journey"     },
+    { path: "/community",     mod: "./routes/incidents"   },
+    { path: "/analytics",     mod: "./routes/analytics"   },
+  ];
+
+  for (const { path, mod } of routes) {
+    try {
+      const router = await import(mod);
+      app.use(path, router.default);
+      console.log(`[RAKSHA] Route mounted: ${path}`);
+    } catch (err) {
+      console.error(`[RAKSHA] Failed to mount route ${path}:`, err);
+    }
+  }
+
+  // ── Background Services ────────────────────────────────────────────────────
+  try {
+    const { startTamperMonitor } = await import("./services/tamperMonitor");
+    startTamperMonitor();
+    console.log("[RAKSHA] Tamper monitor started");
+  } catch (err) {
+    console.error("[RAKSHA] Tamper monitor failed to start:", err);
+  }
+
+  try {
+    const { resumeActiveEscalations } = await import("./services/escalationService");
+    await resumeActiveEscalations();
+    console.log("[RAKSHA] Escalation recovery complete");
+  } catch (err) {
+    console.error("[RAKSHA] Escalation recovery failed:", err);
+  }
+
+  console.log("[RAKSHA] All services initialised");
+}

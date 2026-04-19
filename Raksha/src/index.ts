@@ -33,7 +33,11 @@ const server = http.createServer(app);
 // ─── Port & Binding ───────────────────────────────────────────────────────────
 // Railway provides PORT via environment variable. Bind to 0.0.0.0 (not localhost)
 // so the container port is externally reachable.
-const PORT: number = Number(process.env.PORT) || 4000;
+const PORT = Number(process.env.PORT);
+
+if (!PORT) {
+  throw new Error("PORT not defined");
+}
 
 server.listen(PORT, "0.0.0.0", () => {
   console.log(`[RAKSHA] Server running on port ${PORT} (HTTP + WebSocket)`);

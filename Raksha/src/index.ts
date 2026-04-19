@@ -16,6 +16,11 @@ app.use(express.json());
 app.use(express.text({ type: "text/plain" }));
 app.use(express.urlencoded({ extended: true }));
 
+// ─── Root Route ───────────────────────────────────────────────────────────────
+app.get("/", (_req, res) => {
+  res.status(200).send("Raksha backend is live");
+});
+
 // ─── Health Check ─────────────────────────────────────────────────────────────
 // Registered BEFORE all other routes and BEFORE any external service init.
 // Railway pings this during deploy — it must always return 200 immediately.

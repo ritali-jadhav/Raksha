@@ -31,16 +31,22 @@ app.use(express.json());
 app.use(express.text({ type: 'text/plain' }));
 app.use(express.urlencoded({ extended: true }));
 
+// ─── Health Check ────────────────────────────────────────────────────────────
+// Registered FIRST so Railway health checks always succeed, regardless of
+// whether background services (Firebase, Twilio) have finished initialising.
+app.get("/health", (_req, res) => {
+  res.status(200).send("OK");
+});
+// ─────────────────────────────────────────────────────────────────────────────
+
 // Create HTTP server (needed for Socket.IO)
 const server = http.createServer(app);
 
 // Initialize Socket.IO on the HTTP server
 initSocketIO(server);
 
-// Public routes (no auth required)
+// ─── API Routes ──────────────────────────────────────────────────────────────
 app.use("/auth", authRouter);
-
-// Protected routes (auth handled at router level)
 app.use("/sos", sosRouter);
 app.use("/guardian", guardianRouter);
 app.use("/geofence", geofenceRouter);
@@ -53,17 +59,17 @@ app.use("/journey", journeyRouter);
 app.use("/community", communityRouter);
 app.use("/analytics", analyticsRouter);
 
-// Health Check
-app.get("/health", (_req, res) => {
-  res.json({ status: "Raksha backend running", websocket: true });
-});
-
+// ─── Port & Server Start ─────────────────────────────────────────────────────
+// Railway provides PORT via environment variable. Bind to 0.0.0.0 so the
+// container's port is accessible externally.
 const PORT: number = Number(process.env.PORT) || 4000;
-// Start background services
+
+// Start background services (non-blocking — do not await)
 startTamperMonitor();
 resumeActiveEscalations();
 
-// Start server ONLY ONCE (use server.listen instead of app.listen for Socket.IO)
+// server.listen instead of app.listen — required for Socket.IO
 server.listen(PORT, "0.0.0.0", () => {
-  console.log(`Raksha backend running on port ${PORT} (HTTP + WebSocket)`);
+  console.log(`[RAKSHA] Backend running on port ${PORT} (HTTP + WebSocket)`);
+  console.log(`[RAKSHA] Health check: http://0.0.0.0:${PORT}/health`);
 });

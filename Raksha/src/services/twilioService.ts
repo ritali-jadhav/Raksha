@@ -1,19 +1,34 @@
 import twilio from "twilio";
 
-const ACCOUNT_SID = process.env.TWILIO_ACCOUNT_SID || "";
-const AUTH_TOKEN = process.env.TWILIO_AUTH_TOKEN || "";
-const FROM_NUMBER = process.env.TWILIO_PHONE_NUMBER || "";
+const MAX_RETRIES = 2;
+const CALL_RING_TIMEOUT_SECONDS = 20;
+const CALL_ROTATION_BUFFER_MIN_MS = 5000;
+const CALL_ROTATION_BUFFER_MAX_MS = 7000;
 
-let client: twilio.Twilio | null = null;
+// Lazy client — initialized on first use so dotenv has time to load
+let _client: twilio.Twilio | null | undefined = undefined;
 
-if (ACCOUNT_SID && AUTH_TOKEN) {
-  client = twilio(ACCOUNT_SID, AUTH_TOKEN);
-  console.log("[TWILIO] Client initialized");
-} else {
-  console.warn("[TWILIO] Credentials not configured — SMS/calls disabled");
+function getClient(): twilio.Twilio | null {
+  if (_client !== undefined) return _client;
+
+  const sid = process.env.TWILIO_ACCOUNT_SID || "";
+  const token = process.env.TWILIO_AUTH_TOKEN || "";
+  const from = process.env.TWILIO_PHONE_NUMBER || "";
+
+  if (!sid || !token) {
+    console.warn("[TWILIO] Credentials not configured — SMS/calls disabled");
+    _client = null;
+    return null;
+  }
+
+  _client = twilio(sid, token);
+  console.log(`[TWILIO] Client initialized (SID ****${sid.slice(-6)}, from ${from || "unset"})`);
+  return _client;
 }
 
-const MAX_RETRIES = 2;
+function getFromNumber(): string {
+  return process.env.TWILIO_PHONE_NUMBER || "";
+}
 
 /**
  * Send SMS to a phone number with retry
@@ -23,6 +38,7 @@ async function sendSMSWithRetry(
   body: string,
   attempt = 0
 ): Promise<boolean> {
+  const client = getClient();
   if (!client) {
     console.warn("[TWILIO] Client not initialized, skipping SMS");
     return false;
@@ -31,7 +47,7 @@ async function sendSMSWithRetry(
   try {
     const msg = await client.messages.create({
       body,
-      from: FROM_NUMBER,
+      from: getFromNumber(),
       to,
     });
     console.log(`[TWILIO] SMS sent to ${to}: ${msg.sid}`);
@@ -54,12 +70,27 @@ export async function sendSOSAlert(
   userName: string,
   lat: number,
   lng: number,
-  mediaUrl?: string
+  evidence?: string[] | string
 ): Promise<boolean> {
-  const locationLink = `https://www.google.com/maps?q=${lat},${lng}`;
-  let body = `🚨 SOS Alert! ${userName} is in danger.\nLocation: ${locationLink}`;
-  if (mediaUrl) {
-    body += `\nEvidence: ${mediaUrl}`;
+  const timestamp = new Date().toISOString();
+  const hasLocation = typeof lat === "number" && typeof lng === "number" && lat !== 0 && lng !== 0;
+  const locationLink = hasLocation ? `https://www.google.com/maps?q=${lat},${lng}` : null;
+
+  let body = `🚨 SOS Alert! ${userName} is in danger.\nTime: ${timestamp}`;
+  if (locationLink) {
+    body += `\nTrack my location: ${locationLink}`;
+  } else {
+    body += `\nTrack my location: (unavailable)`;
+  }
+
+  const evidenceUrls = Array.isArray(evidence)
+    ? evidence.filter((u) => typeof u === "string" && u.length > 0)
+    : typeof evidence === "string" && evidence.length > 0
+      ? [evidence]
+      : [];
+
+  if (evidenceUrls.length > 0) {
+    body += `\nEvidence: ${evidenceUrls.join(" ")}`;
   }
   body += `\n\n— Raksha Safety App`;
 
@@ -78,6 +109,21 @@ export async function sendSafeSMS(
 }
 
 /**
+ * Send SOS evidence update SMS (second stage).
+ * Sent after at least one evidence URL is uploaded.
+ */
+export async function sendEvidenceUpdateSMS(
+  guardianPhone: string,
+  evidenceUrls: string[]
+): Promise<boolean> {
+  const urls = (evidenceUrls || []).filter((u) => typeof u === "string" && u.length > 0);
+  const body = urls.length > 0
+    ? `📎 Evidence captured: ${urls.join(" ")}\n\n— Raksha Safety App`
+    : `📎 Evidence captured.\n\n— Raksha Safety App`;
+  return sendSMSWithRetry(guardianPhone, body);
+}
+
+/**
  * Make a voice call to a guardian with TwiML message
  */
 async function makeCallWithRetry(
@@ -85,6 +131,7 @@ async function makeCallWithRetry(
   twiml: string,
   attempt = 0
 ): Promise<string | null> {
+  const client = getClient();
   if (!client) {
     console.warn("[TWILIO] Client not initialized, skipping call");
     return null;
@@ -93,9 +140,9 @@ async function makeCallWithRetry(
   try {
     const call = await client.calls.create({
       twiml,
-      from: FROM_NUMBER,
+      from: getFromNumber(),
       to,
-      timeout: 30, // ring for 30 seconds
+      timeout: CALL_RING_TIMEOUT_SECONDS,
     });
     console.log(`[TWILIO] Call initiated to ${to}: ${call.sid}`);
     return call.sid;
@@ -123,8 +170,24 @@ export async function callGuardiansSequentially(
     return { called: 0, answered: [] };
   }
 
-  const locationLink = `https://www.google.com/maps?q=${lat},${lng}`;
-  const twiml = `<Response><Say voice="alice">Emergency SOS alert. ${userName} is in danger and needs help. Their location has been sent to your phone. Please check your messages immediately.</Say><Pause length="2"/><Say voice="alice">Repeating. ${userName} has triggered an emergency alert. Location link: ${locationLink}</Say></Response>`;
+  // Build spoken coordinates (e.g. "19 point 07 North, 72 point 87 East")
+  const latSpoken = lat ? lat.toFixed(4).replace('.', ' point ') : 'unknown';
+  const lngSpoken = lng ? lng.toFixed(4).replace('.', ' point ') : 'unknown';
+  const hasLocation = lat !== 0 && lng !== 0;
+
+  const locationText = hasLocation
+    ? `Their GPS coordinates are: latitude ${latSpoken}, longitude ${lngSpoken}. A Google Maps link has been sent to your phone via SMS.`
+    : `Their exact location is unavailable right now. Please check your SMS for updates.`;
+
+  const twiml = `<Response>
+    <Say voice="alice">Emergency S O S alert from Raksha Safety App. ${userName} is in danger and needs help immediately.</Say>
+    <Pause length="1"/>
+    <Say voice="alice">${locationText}</Say>
+    <Pause length="1"/>
+    <Say voice="alice">Please respond now. This message will repeat.</Say>
+    <Pause length="2"/>
+    <Say voice="alice">Emergency alert. ${userName} needs help. Check your SMS for the location link and any captured evidence. Please respond immediately.</Say>
+  </Response>`;
 
   const answered: string[] = [];
   let called = 0;
@@ -140,9 +203,12 @@ export async function callGuardiansSequentially(
       console.log(`[TWILIO] Call to ${phone} failed, moving to next guardian`);
     }
 
-    // Small delay between calls to avoid overwhelming
+    // Buffer between calls: 5–7 seconds
     if (guardianPhones.indexOf(phone) < guardianPhones.length - 1) {
-      await new Promise((r) => setTimeout(r, 2000));
+      const jitter =
+        CALL_ROTATION_BUFFER_MIN_MS +
+        Math.floor(Math.random() * (CALL_ROTATION_BUFFER_MAX_MS - CALL_ROTATION_BUFFER_MIN_MS + 1));
+      await new Promise((r) => setTimeout(r, jitter));
     }
   }
 
@@ -158,13 +224,13 @@ export async function sendSOSToAllGuardians(
   userName: string,
   lat: number,
   lng: number,
-  mediaUrl?: string
+  evidence?: string[] | string
 ): Promise<{ sent: number; failed: number }> {
   let sent = 0;
   let failed = 0;
 
   for (const phone of guardianPhones) {
-    const success = await sendSOSAlert(phone, userName, lat, lng, mediaUrl);
+    const success = await sendSOSAlert(phone, userName, lat, lng, evidence);
     if (success) sent++;
     else failed++;
   }
@@ -180,9 +246,14 @@ export async function sendSOSToAllGuardians(
 export async function sendMediaFollowUpSMS(
   guardianPhone: string,
   userName: string,
-  mediaUrl: string
+  mediaUrl: string,
+  lat?: number | null,
+  lng?: number | null
 ): Promise<boolean> {
-  const body = `📎 Evidence captured for ${userName}'s SOS alert.\nView: ${mediaUrl}\n\n— Raksha Safety App`;
+  const hasLocation = lat && lng && (lat !== 0 || lng !== 0);
+  const locationLine = hasLocation
+    ? `\nLocation: https://www.google.com/maps?q=${lat},${lng}`
+    : '';
+  const body = `📎 Evidence captured for ${userName}'s SOS alert.${locationLine}\nEvidence: ${mediaUrl}\n\n— Raksha Safety App`;
   return sendSMSWithRetry(guardianPhone, body);
 }
-

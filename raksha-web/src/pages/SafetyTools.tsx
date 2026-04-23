@@ -83,7 +83,7 @@ function DeadMansSwitch() {
                 <span style={{ fontSize: 24 }}>⏱️</span>
                 <div>
                     <div style={{ fontWeight: 700, fontSize: 15 }}>Dead Man's Switch</div>
-                    <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Auto-SOS if you don't check in</div>
+                    <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Auto-SOS if you don't check in • Works even if app is closed</div>
                 </div>
             </div>
 
@@ -205,7 +205,7 @@ function JourneyMode() {
                 <span style={{ fontSize: 24 }}>🧭</span>
                 <div>
                     <div style={{ fontWeight: 700, fontSize: 15 }}>Journey Mode</div>
-                    <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Auto-SOS if you don't arrive on time</div>
+                    <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Auto-SOS if you don't arrive on time • Works even if app is closed</div>
                 </div>
             </div>
 

@@ -7,11 +7,15 @@ function normalizeBaseUrl(value: string) {
 }
 
 function resolveSocketUrl(): string {
-  const fromEnv = (import.meta as any)?.env?.VITE_SOCKET_URL as string | undefined;
-  if (fromEnv && fromEnv.trim()) return normalizeBaseUrl(fromEnv.trim());
+  // Prefer dedicated VITE_SOCKET_URL if set, otherwise reuse the API base URL
+  const socketEnv = (import.meta as any)?.env?.VITE_SOCKET_URL as string | undefined;
+  if (socketEnv && socketEnv.trim()) return normalizeBaseUrl(socketEnv.trim());
 
-  // Local web dev fallback (works in browser, NOT on a real phone APK).
-  return 'http://localhost:4000';
+  const apiEnv = (import.meta as any)?.env?.VITE_API_BASE as string | undefined;
+  if (apiEnv && apiEnv.trim()) return normalizeBaseUrl(apiEnv.trim());
+
+  // Fallback — must be publicly reachable for real-device builds.
+  return 'https://raksha-production.up.railway.app';
 }
 
 const SOCKET_URL = resolveSocketUrl();

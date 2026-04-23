@@ -1,6 +1,17 @@
 import { firestore } from "../config/firebase";
 import { sendPushToGuardians } from "./webPushService";
 
+function normalizePhoneForTwilio(phone: string | null | undefined): string | null {
+  if (!phone) return null;
+  const raw = String(phone).trim();
+  if (!raw) return null;
+  // Keep leading +, strip other non-digits.
+  const hasPlus = raw.startsWith("+");
+  const digits = raw.replace(/\D/g, "");
+  if (!digits) return null;
+  return hasPlus ? `+${digits}` : `+${digits}`;
+}
+
 /**
  * 🛡️ Get confirmed guardians for a protected user
  */
@@ -326,7 +337,8 @@ export async function getAllGuardianPhones(userId: string): Promise<string[]> {
       const gId = (g as any).guardianId;
       const gDoc = await firestore.collection("users").doc(gId).get();
       const phone = gDoc.exists ? gDoc.data()?.phone : null;
-      if (phone) phones.push(phone);
+      const normalized = normalizePhoneForTwilio(phone);
+      if (normalized) phones.push(normalized);
     }
   } catch (err) {
     console.error("[GUARDIAN] Error fetching in-app guardian phones:", err);
@@ -337,7 +349,8 @@ export async function getAllGuardianPhones(userId: string): Promise<string[]> {
     const externalGuardians = await getExternalGuardiansForUser(userId);
     for (const eg of externalGuardians) {
       const phone = (eg as any).phone;
-      if (phone) phones.push(phone);
+      const normalized = normalizePhoneForTwilio(phone);
+      if (normalized) phones.push(normalized);
     }
   } catch (err) {
     console.error("[GUARDIAN] Error fetching external guardian phones:", err);

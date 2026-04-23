@@ -7,8 +7,8 @@ function resolveApiBase(): string {
   const fromEnv = (import.meta as any)?.env?.VITE_API_BASE as string | undefined;
   if (fromEnv && fromEnv.trim()) return normalizeBaseUrl(fromEnv.trim());
 
-  // Local web dev fallback (works in browser, NOT on a real phone APK).
-  return 'http://localhost:4000';
+  // Fallback — must be a publicly reachable URL for real-device / APK builds.
+  return 'https://raksha-production.up.railway.app';
 }
 
 export const API_BASE = resolveApiBase();
@@ -270,4 +270,11 @@ export const analyticsApi = {
   crimeTrends: (city?: string) =>
     api(`/analytics/crime-trends${city ? `?city=${encodeURIComponent(city)}` : ''}`),
   topCities: () => api('/analytics/top-cities'),
+};
+
+export const safeRouteApi = {
+  routes: (source: string, destination: string, hour: number) =>
+    api(`/safe-route/routes?source=${encodeURIComponent(source)}&destination=${encodeURIComponent(destination)}&hour=${hour}`),
+  riskMap: (hour: number) =>
+    api(`/safe-route/risk-map?hour=${hour}`),
 };

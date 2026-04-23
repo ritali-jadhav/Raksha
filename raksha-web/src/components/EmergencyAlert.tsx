@@ -225,11 +225,20 @@ export default function EmergencyAlert() {
             <img
               src={activeAlert.mediaUrl}
               alt="Captured evidence"
-              style={{ width: '100%', maxHeight: 180, objectFit: 'cover', display: 'block' }}
+              style={{ width: '100%', maxHeight: 180, objectFit: 'cover', display: 'block', cursor: 'pointer' }}
+              onClick={() => window.open(activeAlert.mediaUrl, '_blank')}
             />
           )}
-          <div style={{ padding: '6px 10px', fontSize: 11, color: 'var(--text-muted)', background: 'var(--bg-card)' }}>
-            📎 Evidence captured
+          <div style={{ padding: '8px 10px', background: 'var(--bg-card)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <span style={{ fontSize: 12, color: 'var(--text-muted)', fontWeight: 500 }}>📎 Evidence captured — tap image to zoom</span>
+            <a
+              href={activeAlert.mediaUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              style={{ fontSize: 12, color: 'var(--accent)', fontWeight: 700, textDecoration: 'none', whiteSpace: 'nowrap', marginLeft: 8 }}
+            >
+              Open ↗
+            </a>
           </div>
         </div>
       )}

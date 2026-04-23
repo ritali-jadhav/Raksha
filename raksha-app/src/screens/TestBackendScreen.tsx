@@ -1,12 +1,13 @@
 import React, { useState } from "react";
 import { View, Text, Button } from "react-native";
+import { API_BASE } from "../../lib/api";
 
 export default function TestBackendScreen() {
   const [response, setResponse] = useState("");
 
   const testBackend = async () => {
     try {
-      const res = await fetch("http://192.168.205.1:4000/health");
+      const res = await fetch(`${API_BASE}/health`);
       const data = await res.json();
       setResponse(JSON.stringify(data));
     } catch (err) {

@@ -3,6 +3,7 @@ import L from 'leaflet';
 import { sosApi } from '../api/client';
 import { useBackgroundLocation } from '../hooks/useBackgroundLocation';
 import { useNearbyPlaces } from '../hooks/useNearbyPlaces';
+import { useSocket } from '../context/SocketContext';
 import PinPad from '../components/PinPad';
 
 interface SOSActiveProps {
@@ -23,7 +24,9 @@ export default function SOSActive({ incidentId, guardians, onCancelled, triggerS
   const [, setCallingIdx] = useState(0);
   const [callCountdown, setCallCountdown] = useState(CALL_TIMEOUT);
   const [callStatus, setCallStatus] = useState<string[]>([]);
-  const [guardianResponded] = useState<string | null>(null);
+  // guardianResponded: name of the guardian who responded (via socket event)
+  const [guardianResponded, setGuardianResponded] = useState<string | null>(null);
+  const [escalationStage, setEscalationStage] = useState(0);
 
   const timerRef = useRef<ReturnType<typeof setInterval> | undefined>(undefined);
   const mapRef = useRef<HTMLDivElement>(null);
@@ -31,12 +34,12 @@ export default function SOSActive({ incidentId, guardians, onCancelled, triggerS
   const marker = useRef<L.CircleMarker | null>(null);
   const nearbyMarkersRef = useRef<L.CircleMarker[]>([]);
   const nearbyFetchedRef = useRef(false);
-  const audioRef = useRef<AudioContext | null>(null);
-  const oscillatorRef = useRef<OscillatorNode | null>(null);
+  // Audio removed — vibration only
 
   // Background location tracking
   const location = useBackgroundLocation(true);
   const { fetchNearby, addMarkersToMap } = useNearbyPlaces();
+  const { socket } = useSocket();
 
   // Main timer
   useEffect(() => {
@@ -44,23 +47,45 @@ export default function SOSActive({ incidentId, guardians, onCancelled, triggerS
     return () => clearInterval(timerRef.current);
   }, []);
 
-  // Alarm sound on SOS activation
+  // Wire socket events: guardian response + escalation stage updates
   useEffect(() => {
-    startAlarm();
+    if (!socket) return;
 
-    // Vibrate with SOS pattern
-    if (navigator.vibrate) {
-      // SOS in Morse: ... --- ...
-      const sosPattern = [
-        100, 100, 100, 100, 100, 300, // ...
-        300, 100, 300, 100, 300, 300, // ---
-        100, 100, 100, 100, 100, 500, // ...
-      ];
-      const vibrateLoop = () => navigator.vibrate(sosPattern);
-      vibrateLoop();
-      const vibInterval = setInterval(vibrateLoop, 3600);
-      return () => { clearInterval(vibInterval); navigator.vibrate(0); };
-    }
+    const handleGuardianRespond = (data: any) => {
+      if (data.incidentId === incidentId) {
+        setGuardianResponded(data.guardianName || 'A guardian');
+        navigator.vibrate?.(0); // stop vibration
+      }
+    };
+
+    const handleEscalation = (data: any) => {
+      if (data.incidentId === incidentId) {
+        setEscalationStage(data.stage);
+      }
+    };
+
+    socket.on('sos:respond', handleGuardianRespond);
+    socket.on('sos:escalation', handleEscalation);
+
+    return () => {
+      socket.off('sos:respond', handleGuardianRespond);
+      socket.off('sos:escalation', handleEscalation);
+    };
+  }, [socket, incidentId]);
+
+  // Vibration-only SOS pattern (no sound)
+  useEffect(() => {
+    if (!navigator.vibrate) return;
+    // SOS in Morse: ... --- ...
+    const sosPattern = [
+      100, 100, 100, 100, 100, 300, // ...
+      300, 100, 300, 100, 300, 300, // ---
+      100, 100, 100, 100, 100, 500, // ...
+    ];
+    const vibrateLoop = () => navigator.vibrate(sosPattern);
+    vibrateLoop();
+    const vibInterval = setInterval(vibrateLoop, 3600);
+    return () => { clearInterval(vibInterval); navigator.vibrate(0); };
   }, []);
 
   // Init map
@@ -131,39 +156,8 @@ export default function SOSActive({ incidentId, guardians, onCancelled, triggerS
     return () => clearInterval(tick);
   }, [guardians]);
 
-  const startAlarm = () => {
-    try {
-      const ctx = new AudioContext();
-      audioRef.current = ctx;
-
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-      osc.type = 'sawtooth';
-      gain.gain.setValueAtTime(0.1, ctx.currentTime);
-
-      // Emergency siren sweep
-      const now = ctx.currentTime;
-      for (let i = 0; i < 120; i++) {
-        osc.frequency.setValueAtTime(600, now + i * 0.6);
-        osc.frequency.linearRampToValueAtTime(1000, now + i * 0.6 + 0.3);
-        osc.frequency.linearRampToValueAtTime(600, now + i * 0.6 + 0.6);
-      }
-
-      osc.connect(gain);
-      gain.connect(ctx.destination);
-      osc.start();
-      oscillatorRef.current = osc;
-    } catch {}
-  };
-
-  const stopAlarm = () => {
-    try {
-      oscillatorRef.current?.stop();
-      audioRef.current?.close();
-      oscillatorRef.current = null;
-      audioRef.current = null;
-      navigator.vibrate?.(0);
-    } catch {}
+  const stopVibration = () => {
+    navigator.vibrate?.(0);
   };
 
   const formatTime = (s: number) => {
@@ -179,7 +173,7 @@ export default function SOSActive({ incidentId, guardians, onCancelled, triggerS
       const result = await sosApi.verifyPin(incidentId, pin);
       if (result.success) {
         clearInterval(timerRef.current);
-        stopAlarm();
+        stopVibration();
         onCancelled();
       } else {
         setPinAttempts(a => a + 1);
@@ -271,7 +265,17 @@ export default function SOSActive({ incidentId, guardians, onCancelled, triggerS
         <div className="sos-status-bar" style={{ background: 'var(--safe-glow)', border: '1px solid var(--safe)' }}>
           <span style={{ fontSize: 14 }}>💚</span>
           <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--safe)' }}>
-            Guardian is responding to your alert!
+            {guardianResponded} is responding to your alert!
+          </span>
+        </div>
+      )}
+
+      {/* Escalation stage badge */}
+      {escalationStage > 0 && (
+        <div className="sos-status-bar" style={{ background: 'rgba(255,165,2,0.15)', border: '1px solid var(--warning)' }}>
+          <span style={{ fontSize: 14 }}>⚡</span>
+          <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--warning)' }}>
+            Alert escalated (Stage {escalationStage}/4) — more guardians notified
           </span>
         </div>
       )}
@@ -335,7 +339,7 @@ export default function SOSActive({ incidentId, guardians, onCancelled, triggerS
 
       {/* Cancel Button */}
       <div style={{ marginTop: 'auto', padding: '16px 0' }}>
-        <button className="btn btn-danger btn-block" onClick={() => { setShowPin(true); stopAlarm(); }}>
+        <button className="btn btn-danger btn-block" onClick={() => { setShowPin(true); stopVibration(); }}>
           🔐 Cancel SOS — Enter PIN
         </button>
       </div>

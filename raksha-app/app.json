@@ -9,10 +9,22 @@
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "infoPlist": {
+        "NSCameraUsageDescription": "Raksha needs camera access to capture evidence during an SOS emergency.",
+        "NSMicrophoneUsageDescription": "Raksha needs microphone access to record audio evidence during an SOS emergency.",
+        "NSLocationWhenInUseUsageDescription": "Raksha uses your location to find safe routes and send it to your guardians during an SOS.",
+        "NSLocationAlwaysUsageDescription": "Raksha uses your location to monitor your journey and trigger automatic SOS alerts."
+      }
     },
     "android": {
-      
+      "package": "com.reet06.rakshaapp",
+      "permissions": [
+        "android.permission.CAMERA",
+        "android.permission.RECORD_AUDIO",
+        "android.permission.ACCESS_FINE_LOCATION",
+        "android.permission.ACCESS_COARSE_LOCATION"
+      ],
       "adaptiveIcon": {
         "backgroundColor": "#E6F4FE",
         "foregroundImage": "./assets/images/android-icon-foreground.png",
@@ -30,6 +42,20 @@
     "plugins": [
       "expo-router",
       [
+        "expo-camera",
+        {
+          "cameraPermission": "Raksha needs camera access to capture evidence during an SOS emergency.",
+          "microphonePermission": "Raksha needs microphone access to record audio evidence during an SOS emergency.",
+          "recordAudioAndroid": true
+        }
+      ],
+      [
+        "expo-location",
+        {
+          "locationAlwaysAndWhenInUsePermission": "Raksha uses your location to find safe routes and alert guardians."
+        }
+      ],
+      [
         "expo-splash-screen",
         {
           "image": "./assets/images/splash-icon.png",
@@ -45,6 +71,13 @@
     "experiments": {
       "typedRoutes": true,
       "reactCompiler": true
-    }
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "2da3c9ca-d892-425f-b0c4-9d4a010cc14d"
+      }
+    },
+    "owner": "reet06"
   }
 }

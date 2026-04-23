@@ -1,4 +1,5 @@
 import { Router } from "express";
+import admin from "../config/firebase";
 import { firestore } from "../config/firebase";
 import { requireAuth, getAuthUser } from "../middleware/auth";
 
@@ -78,7 +79,7 @@ router.get("/nearby", async (req, res) => {
 router.post("/upvote/:id", async (req, res) => {
     try {
         const ref = firestore.collection("community_incidents").doc(req.params.id);
-        await ref.update({ upvotes: (await ref.get()).data()?.upvotes + 1 || 1 });
+        await ref.update({ upvotes: admin.firestore.FieldValue.increment(1) });
         return res.json({ success: true });
     } catch (e) {
         return res.status(500).json({ error: "Failed to upvote" });

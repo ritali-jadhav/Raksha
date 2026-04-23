@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import L from 'leaflet';
 import { useToast } from '../context/ToastContext';
+import { safeRouteApi } from '../api/client';
 
 interface Route {
     route_id: number;
@@ -17,7 +18,7 @@ interface RiskCell {
     is_hotspot: boolean;
 }
 
-const SAFE_ROUTE_BASE = (import.meta as any)?.env?.VITE_SAFE_ROUTE_URL || 'http://127.0.0.1:8000';
+// Routes now go through the Node.js backend proxy (/safe-route/*) via safeRouteApi
 const MUMBAI: [number, number] = [19.07, 72.87];
 const UPDATE_THRESHOLD_M = 50;
 
@@ -62,6 +63,7 @@ export default function SafeRoute() {
     const [loadingHeat, setLoadingHeat] = useState(false);
     const [geoError, setGeoError] = useState(false);
     const [showPanel, setShowPanel] = useState(true);
+    const [serviceOffline, setServiceOffline] = useState(false);
 
     // Init map
     useEffect(() => {
@@ -76,6 +78,7 @@ export default function SafeRoute() {
 
         return () => {
             if (watchId.current !== null) navigator.geolocation.clearWatch(watchId.current);
+            if (leafletMap.current) { leafletMap.current.remove(); leafletMap.current = null; }
         };
     }, []);
 
@@ -121,45 +124,84 @@ export default function SafeRoute() {
         }
     };
 
-    // Load heatmap
+    // Clear old heat layers / hotspot circles
+    const clearHeatLayers = useCallback(() => {
+        if (!leafletMap.current) return;
+        if (heatLayer.current) {
+            // Remove all heat circle layers
+            (heatLayer.current as L.CircleMarker[]).forEach(m => leafletMap.current!.removeLayer(m));
+            heatLayer.current = null;
+        }
+        hotspotMarkers.current.forEach(m => leafletMap.current!.removeLayer(m));
+        hotspotMarkers.current = [];
+    }, []);
+
+    // Pure Leaflet heatmap: semi-transparent circles sized and colored by risk
+    const renderHeat = useCallback((cells: RiskCell[]) => {
+        if (!leafletMap.current || cells.length === 0) return;
+        clearHeatLayers();
+
+        const layers: L.CircleMarker[] = [];
+
+        cells.forEach(c => {
+            const risk = c.risk;
+            // Color gradient: green → yellow → orange → red
+            let color: string;
+            if (risk < 0.25)      color = '#2ed573'; // safe green
+            else if (risk < 0.5)  color = '#ffa502'; // yellow
+            else if (risk < 0.75) color = '#ff6348'; // orange
+            else                  color = '#c0392b'; // danger red
+
+            const radius = 12 + risk * 20; // 12–32px based on risk
+            const opacity = 0.15 + risk * 0.35; // 0.15–0.50 opacity
+
+            const circle = L.circleMarker([c.lat, c.lon], {
+                radius,
+                color: 'transparent',
+                fillColor: color,
+                fillOpacity: opacity,
+                interactive: false, // don't block map clicks
+            }).addTo(leafletMap.current!);
+
+            layers.push(circle);
+        });
+
+        // Store heat layer array so we can remove it later
+        heatLayer.current = layers as any;
+
+        // Hotspot circles with popup (rendered on top)
+        cells.filter(c => c.is_hotspot).forEach(c => {
+            const m = L.circleMarker([c.lat, c.lon], {
+                radius: 7,
+                color: '#c0392b',
+                fillColor: '#ff4757',
+                fillOpacity: 0.6,
+                weight: 2,
+            }).addTo(leafletMap.current!);
+            m.bindPopup(`<div style="font-family:sans-serif;font-size:13px"><b style="color:#ff4757">⚠️ High Risk Zone</b><br/>Risk: <b>${(c.risk * 100).toFixed(0)}%</b></div>`);
+            hotspotMarkers.current.push(m);
+        });
+    }, [clearHeatLayers]);
+
+    // Load heatmap via backend proxy
     const loadHeatmap = useCallback(async (h: number) => {
         setLoadingHeat(true);
+        setServiceOffline(false);
         try {
-            const data = await fetch(`${SAFE_ROUTE_BASE}/risk-map?hour=${h}`).then(r => r.json());
+            const data = await safeRouteApi.riskMap(h);
             const cells: RiskCell[] = data.data || [];
             setHotspotCells(cells);
-
-            if (!leafletMap.current) return;
-
-            // Remove old heat layer
-            if (heatLayer.current) { leafletMap.current.removeLayer(heatLayer.current); heatLayer.current = null; }
-            hotspotMarkers.current.forEach(m => leafletMap.current!.removeLayer(m));
-            hotspotMarkers.current = [];
-
-            // Add heatmap if plugin available
-            const L_any = L as any;
-            if (L_any.heatLayer) {
-                const points = cells.map(c => [c.lat, c.lon, c.risk * 1.2]);
-                heatLayer.current = L_any.heatLayer(points, {
-                    radius: 22, blur: 16, maxZoom: 17, max: 1.2,
-                    gradient: { 0.1: '#2ed573', 0.3: '#ffa502', 0.6: '#ff6348', 1.0: '#c0392b' },
-                }).addTo(leafletMap.current);
-            }
-
-            // Hotspot markers
-            cells.filter(c => c.is_hotspot).forEach(c => {
-                const m = L.circleMarker([c.lat, c.lon], {
-                    radius: 7, color: '#ff4757', fillColor: '#ff4757', fillOpacity: 0.35, weight: 2,
-                }).addTo(leafletMap.current!);
-                m.bindPopup(`<div style="font-family:sans-serif;font-size:13px"><b style="color:#ff4757">High Risk Zone</b><br>Risk score: <b>${(c.risk * 100).toFixed(0)}%</b></div>`);
-                hotspotMarkers.current.push(m);
-            });
-        } catch {
-            showToast('Could not load risk map', 'error');
+            renderHeat(cells);
+        } catch (err: any) {
+            setServiceOffline(true);
+            showToast('Risk map service offline — showing demo data', 'warning');
+            const demoCells = generateDemoHotspots();
+            setHotspotCells(demoCells);
+            renderHeat(demoCells);
         } finally {
             setLoadingHeat(false);
         }
-    }, [showToast]);
+    }, [showToast, renderHeat]);
 
     useEffect(() => { loadHeatmap(hour); }, [hour]);
 
@@ -169,7 +211,7 @@ export default function SafeRoute() {
         setInHighRisk(isLocationInHotspot(currentPos[0], currentPos[1], hotspotCells));
     }, [currentPos, hotspotCells]);
 
-    // Fetch routes
+    // Fetch routes via backend proxy
     const fetchRoutes = async () => {
         if (!source.trim() || !destination.trim()) { showToast('Enter source and destination', 'error'); return; }
         setLoadingRoutes(true);
@@ -178,11 +220,10 @@ export default function SafeRoute() {
         routeLayers.current = [];
 
         try {
-            const params = new URLSearchParams({ source: source.trim(), destination: destination.trim(), hour: String(hour) });
-            const data = await fetch(`${SAFE_ROUTE_BASE}/routes?${params}`).then(r => r.json());
+            const data = await safeRouteApi.routes(source.trim(), destination.trim(), hour);
 
             if (data.error) { showToast(data.error, 'error'); return; }
-            if (!data.routes?.length) { showToast('No routes found', 'error'); return; }
+            if (!data.routes?.length) { showToast('No routes found — try different locations', 'error'); return; }
 
             setRoutes(data.routes);
 
@@ -195,7 +236,7 @@ export default function SafeRoute() {
                 routeLayers.current.push(poly);
                 if (idx === 0) leafletMap.current?.fitBounds(poly.getBounds(), { padding: [40, 40] });
             });
-        } catch {
+        } catch (err: any) {
             showToast('Route service unavailable', 'error');
         } finally {
             setLoadingRoutes(false);
@@ -228,7 +269,15 @@ export default function SafeRoute() {
                 {/* Geo error */}
                 {geoError && (
                     <div style={{ position: 'absolute', top: 12, left: 12, right: 60, background: 'rgba(255,71,87,0.9)', color: '#fff', borderRadius: 'var(--radius-sm)', padding: '8px 12px', fontSize: 12, fontWeight: 600, zIndex: 500 }}>
-                        Location unavailable — showing Mumbai
+                        📍 Location unavailable — showing Mumbai
+                    </div>
+                )}
+
+                {/* Service offline badge */}
+                {serviceOffline && (
+                    <div style={{ position: 'absolute', top: geoError ? 52 : 12, left: 12, right: 60, background: 'rgba(255,165,2,0.92)', color: '#0a0f1a', borderRadius: 'var(--radius-sm)', padding: '8px 12px', fontSize: 12, fontWeight: 600, zIndex: 500 }}>
+                        ⚠️ Demo data — start Python server for live risk map<br />
+                        <span style={{ fontWeight: 400, fontSize: 11 }}>cd Raksha/Safe_route_updated-criminal-profiles/safe_route/backend &amp;&amp; uvicorn app:app --reload</span>
                     </div>
                 )}
 
@@ -270,7 +319,7 @@ export default function SafeRoute() {
                         </div>
                         <div className="safe-route-input-row">
                             <span className="input-icon">🔴</span>
-                            <input className="input" placeholder="Destination" value={destination} onChange={e => setDestination(e.target.value)} />
+                            <input className="input" placeholder="Destination (address or lat,lng)" value={destination} onChange={e => setDestination(e.target.value)} />
                         </div>
                     </div>
 
@@ -316,4 +365,43 @@ export default function SafeRoute() {
             )}
         </div>
     );
+}
+
+// ─── Demo hotspots rendered when Python service is offline ─────────────────────
+function generateDemoHotspots(): RiskCell[] {
+    const cells: RiskCell[] = [];
+    // Mumbai known high-crime zones (hardcoded, realistic)
+    const hotspotAreas = [
+        { lat: 19.00, lon: 72.84, risk: 0.85 }, // Dharavi
+        { lat: 18.97, lon: 72.83, risk: 0.80 }, // Byculla
+        { lat: 19.04, lon: 72.85, risk: 0.75 }, // Kurla
+        { lat: 19.02, lon: 72.86, risk: 0.78 }, // Govandi
+        { lat: 18.96, lon: 72.82, risk: 0.72 }, // Wadala
+        { lat: 19.10, lon: 72.88, risk: 0.65 }, // Mulund
+        { lat: 19.08, lon: 72.90, risk: 0.60 }, // Thane border
+    ];
+    const mediumAreas = [
+        { lat: 19.12, lon: 72.86, risk: 0.45 },
+        { lat: 19.15, lon: 72.84, risk: 0.40 },
+        { lat: 19.07, lon: 72.83, risk: 0.35 },
+        { lat: 19.05, lon: 72.88, risk: 0.50 },
+        { lat: 18.99, lon: 72.87, risk: 0.55 },
+    ];
+    const safeAreas = [
+        { lat: 19.20, lon: 72.85, risk: 0.15 },
+        { lat: 19.18, lon: 72.90, risk: 0.10 },
+        { lat: 19.22, lon: 72.88, risk: 0.12 },
+        { lat: 19.25, lon: 72.84, risk: 0.08 },
+    ];
+
+    [...hotspotAreas, ...mediumAreas, ...safeAreas].forEach(a => {
+        // Generate a small cluster around each centre
+        for (let i = 0; i < 6; i++) {
+            const lat = a.lat + (Math.random() - 0.5) * 0.015;
+            const lon = a.lon + (Math.random() - 0.5) * 0.015;
+            const risk = Math.min(1, Math.max(0, a.risk + (Math.random() - 0.5) * 0.1));
+            cells.push({ lat, lon, risk, is_hotspot: risk > 0.7 });
+        }
+    });
+    return cells;
 }

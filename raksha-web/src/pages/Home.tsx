@@ -43,6 +43,20 @@ export default function Home() {
     }).finally(() => setLoading(false));
   }, []);
 
+  // Recover active SOS on page reload — prevents orphaned incidents
+  useEffect(() => {
+    sosApi.incidents().then((res: any) => {
+      const incidents: any[] = res.incidents || [];
+      const active = incidents.find((i: any) => i.status === 'active');
+      if (active) {
+        console.log('[SOS] Recovering active incident:', active.id);
+        setIncidentId(active.id);
+        setSosActive(true);
+        showToast('Resuming active SOS session', 'error');
+      }
+    }).catch(() => {}); // non-critical
+  }, []);
+
   const startSOSCountdown = useCallback(() => {
     if (triggering || sosCountdown !== null) return;
     navigator.vibrate?.([50, 30, 50]);
@@ -72,26 +86,49 @@ export default function Home() {
     setTriggering(true);
     setTriggerSource(type);
     try {
+      // ── 1. Try to grab a FAST cached GPS position (max 1.5s) ──────────
+      // Uses maximumAge=Infinity so it returns the browser's cached coords instantly.
+      // This does NOT block like enableHighAccuracy does.
       let lat: number | undefined, lng: number | undefined;
       if (bleCoords) {
-        lat = bleCoords.lat; lng = bleCoords.lng;
-        await locationApi.update(lat, lng).catch(() => { });
-        await sosApi.locationUpdate(lat, lng).catch(() => { });
+        lat = bleCoords.lat;
+        lng = bleCoords.lng;
       } else if (navigator.geolocation) {
         try {
           const pos = await new Promise<GeolocationPosition>((resolve, reject) =>
-            navigator.geolocation.getCurrentPosition(resolve, reject, { enableHighAccuracy: true, timeout: 5000 })
+            navigator.geolocation.getCurrentPosition(resolve, reject, {
+              enableHighAccuracy: false,
+              maximumAge: Infinity,  // accept any cached position
+              timeout: 1500,         // give up after 1.5s max
+            })
           );
-          lat = pos.coords.latitude; lng = pos.coords.longitude;
-          locationApi.update(lat, lng).catch(() => { });
-          sosApi.locationUpdate(lat, lng).catch(() => { });
-        } catch { }
+          lat = pos.coords.latitude;
+          lng = pos.coords.longitude;
+        } catch {
+          // No cached position available — SOS will fire without coords
+        }
       }
+
+      // ── 2. Fire SOS trigger with whatever coords we have ───────────────
       const res = await sosApi.trigger(type, lat, lng);
       setIncidentId(res.incidentId);
       setSosActive(true);
       navigator.vibrate?.([200, 100, 200, 100, 400]);
+
+      // ── 3. Non-blocking: capture media immediately ─────────────────────
       captureAndUploadMedia(res.incidentId).catch(() => { });
+
+      // ── 4. Non-blocking: get high-accuracy GPS and send follow-up ──────
+      // SOSActive's useBackgroundLocation also continuously streams location.
+      if (navigator.geolocation) {
+        navigator.geolocation.getCurrentPosition(
+          (pos) => {
+            locationApi.update(pos.coords.latitude, pos.coords.longitude).catch(() => { });
+          },
+          () => { },
+          { enableHighAccuracy: true, timeout: 10000 }
+        );
+      }
     } catch {
       showToast('Failed to trigger SOS', 'error');
     } finally {
@@ -101,9 +138,23 @@ export default function Home() {
 
   const captureAndUploadMedia = async (incidentId: string) => {
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: 'environment', width: 1280, height: 720 },
-      });
+      // Check camera API is available
+      if (!navigator.mediaDevices?.getUserMedia) {
+        console.warn('[MEDIA] getUserMedia not available on this device');
+        return;
+      }
+
+      let stream: MediaStream;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: 'environment', width: 1280, height: 720 },
+        });
+      } catch (camErr: any) {
+        console.warn('[MEDIA] Camera access denied or unavailable:', camErr.message);
+        // Camera failed — still notify via backend that location is available
+        sosApi.locationUpdate(0, 0).catch(() => {}); // triggers guardian location refresh
+        return;
+      }
 
       const video = document.createElement('video');
       video.srcObject = stream;
@@ -127,7 +178,7 @@ export default function Home() {
       const ctx = canvas.getContext('2d');
       if (ctx) ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
-      // Cleanup stream
+      // Cleanup stream immediately
       stream.getTracks().forEach(t => t.stop());
       video.srcObject = null;
 
@@ -135,11 +186,16 @@ export default function Home() {
         canvas.toBlob(b => b ? resolve(b) : reject(new Error('Canvas empty')), 'image/jpeg', 0.85)
       );
 
-      if (blob && blob.size > 1000) { // sanity check: ignore tiny/black blobs
-        await sosApi.attachMedia(incidentId, blob, 'image');
+      if (!blob || blob.size <= 1000) {
+        console.warn('[MEDIA] Captured blob too small or empty, skipping upload. Size:', blob?.size);
+        return;
       }
-    } catch (err) {
-      console.warn('[MEDIA] Capture failed:', err);
+
+      console.log('[MEDIA] Uploading evidence blob:', blob.size, 'bytes');
+      const result = await sosApi.attachMedia(incidentId, blob, 'image');
+      console.log('[MEDIA] Evidence uploaded:', result?.mediaUrl);
+    } catch (err: any) {
+      console.warn('[MEDIA] Capture/upload failed:', err?.message || err);
     }
   };
 

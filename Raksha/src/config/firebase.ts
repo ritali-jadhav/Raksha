@@ -30,7 +30,7 @@ try {
         clientEmail,
         privateKey,
       }),
-      databaseURL: `https://${projectId}-default-rtdb.firebaseio.com`,
+      databaseURL: `https://${projectId}-default-rtdb.asia-southeast1.firebasedatabase.app`,
       storageBucket: `${projectId}.appspot.com`,
     });
 
@@ -42,17 +42,54 @@ try {
   // Do NOT re-throw — server must stay up even if Firebase fails
 }
 
-// Export safe wrappers that throw a clear error if Firebase failed to init
-export const firestore = firebaseInitialized
-  ? admin.firestore()
-  : (() => { throw new Error("Firebase not initialized"); })();
+// ─── Lazy accessors ────────────────────────────────────────────────────────────
+// Previous code used IIFEs that threw at import-time, crashing the server before
+// the health-check port was even opened. These getters defer the error to actual
+// usage, so /health stays alive and Railway deploys succeed even when Firebase
+// credentials are temporarily unavailable.
+// ─────────────────────────────────────────────────────────────────────────────
 
-export const realtimeDb = firebaseInitialized
-  ? admin.database()
-  : (() => { throw new Error("Firebase not initialized"); })();
+let _firestore: admin.firestore.Firestore | null = null;
+let _realtimeDb: admin.database.Database | null = null;
+let _storage: ReturnType<typeof admin.storage>["bucket"] extends (...args: any) => infer R ? R : never;
 
-export const storage = firebaseInitialized
-  ? admin.storage().bucket()
-  : (() => { throw new Error("Firebase not initialized"); })();
+function getFirestore(): admin.firestore.Firestore {
+  if (!firebaseInitialized) throw new Error("Firebase not initialized");
+  if (!_firestore) _firestore = admin.firestore();
+  return _firestore;
+}
+
+function getRealtimeDb(): admin.database.Database {
+  if (!firebaseInitialized) throw new Error("Firebase not initialized");
+  if (!_realtimeDb) _realtimeDb = admin.database();
+  return _realtimeDb;
+}
+
+function getStorage() {
+  if (!firebaseInitialized) throw new Error("Firebase not initialized");
+  if (!_storage) _storage = admin.storage().bucket();
+  return _storage;
+}
+
+// Proxy objects that forward all property access to the lazily-initialized real
+// instances. This preserves the existing `firestore.collection(...)` call-sites
+// without any refactoring while keeping the server alive on init failure.
+export const firestore: admin.firestore.Firestore = new Proxy({} as admin.firestore.Firestore, {
+  get(_target, prop, receiver) {
+    return Reflect.get(getFirestore(), prop, receiver);
+  },
+});
+
+export const realtimeDb: admin.database.Database = new Proxy({} as admin.database.Database, {
+  get(_target, prop, receiver) {
+    return Reflect.get(getRealtimeDb(), prop, receiver);
+  },
+});
+
+export const storage = new Proxy({} as any, {
+  get(_target, prop, receiver) {
+    return Reflect.get(getStorage(), prop, receiver);
+  },
+});
 
 export default admin;

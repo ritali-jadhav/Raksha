@@ -148,7 +148,11 @@ router.post("/login", async (req, res) => {
 
 /**
  * 👤 Get current user profile (requires auth)
+ * Uses a 60-second in-memory cache to reduce Firestore reads.
  */
+const profileCache = new Map<string, { data: any; expiresAt: number }>();
+const PROFILE_CACHE_TTL_MS = 60_000; // 60 seconds
+
 router.get("/me", async (req, res) => {
   try {
     const authHeader = req.headers.authorization;
@@ -166,9 +170,17 @@ router.get("/me", async (req, res) => {
       return res.status(401).json({ error: "Invalid or expired token" });
     }
 
+    const userId = decoded.userId;
+
+    // Check cache first
+    const cached = profileCache.get(userId);
+    if (cached && Date.now() < cached.expiresAt) {
+      return res.json(cached.data);
+    }
+
     const userDoc = await firestore
       .collection("users")
-      .doc(decoded.userId)
+      .doc(userId)
       .get();
 
     if (!userDoc.exists) {
@@ -177,7 +189,7 @@ router.get("/me", async (req, res) => {
 
     const userData = userDoc.data()!;
 
-    return res.json({
+    const responseData = {
       success: true,
       user: {
         userId: userDoc.id,
@@ -187,7 +199,15 @@ router.get("/me", async (req, res) => {
         hasSafetyPin: !!userData.safetyPin,
         createdAt: userData.createdAt,
       },
+    };
+
+    // Store in cache
+    profileCache.set(userId, {
+      data: responseData,
+      expiresAt: Date.now() + PROFILE_CACHE_TTL_MS,
     });
+
+    return res.json(responseData);
   } catch (error) {
     console.error("[AUTH] Profile error:", error);
     return res.status(500).json({ error: "Failed to fetch profile" });

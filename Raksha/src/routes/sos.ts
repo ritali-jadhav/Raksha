@@ -8,6 +8,7 @@ import {
   resolveIncident,
   attachLocationToIncident,
   attachMediaToIncident,
+  ensureInitialAlertsStarted,
 } from "../services/sosService";
 import { uploadAndStoreEvidence } from "../services/mediaService";
 import { checkGeofenceBreach } from "../services/geofenceService";
@@ -31,24 +32,9 @@ router.post("/trigger", async (req, res) => {
     const { userId } = getAuthUser(req);
     const { triggerType, latitude, longitude } = req.body;
 
-    // Prevent duplicate active incidents
-    const existingSnapshot = await firestore
-      .collection("incidents")
-      .where("userId", "==", userId)
-      .where("status", "==", "active")
-      .limit(1)
-      .get();
-
-    if (!existingSnapshot.empty) {
-      const existingDoc = existingSnapshot.docs[0];
-      return res.json({
-        success: true,
-        incidentId: existingDoc.id,
-        message: "Active incident already exists",
-        existing: true,
-      });
-    }
-
+    // createIncident is idempotent — it returns the existing active incident ID
+    // if one already exists, so we don't need a separate duplicate check here.
+    // This avoids the TOCTOU race condition of checking then creating.
     const incidentId = await createIncident(
       userId,
       triggerType || "manual",
@@ -56,7 +42,18 @@ router.post("/trigger", async (req, res) => {
       longitude
     );
 
-    return res.json({ success: true, incidentId });
+    // Check if this was a pre-existing incident and ensure alerts are running
+    const incDoc = await firestore.collection("incidents").doc(incidentId).get();
+    const incData = incDoc.exists ? incDoc.data() : null;
+    const isExisting = incData?.createdAt !== incData?.timestamp ? false :
+      (Date.now() - new Date(incData?.createdAt || 0).getTime()) > 5000;
+
+    if (isExisting) {
+      // Kick the alert flow again in case it was interrupted (non-blocking)
+      ensureInitialAlertsStarted(userId, incidentId).catch(() => {});
+    }
+
+    return res.json({ success: true, incidentId, existing: isExisting });
   } catch (error) {
     console.error(error);
     return res.status(500).json({ error: "Failed to trigger SOS" });

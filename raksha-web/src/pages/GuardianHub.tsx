@@ -8,6 +8,7 @@ import { SkeletonList } from '../components/Skeleton';
 export default function GuardianHub() {
   const [tab, setTab] = useState<'guardians' | 'pending' | 'notifications' | 'dashboard'>('guardians');
   const [guardians, setGuardians] = useState<any[]>([]);
+  const [phoneGuardians, setPhoneGuardians] = useState<any[]>([]);
   const [pending, setPending] = useState<{ incoming: any[]; outgoing: any[] }>({ incoming: [], outgoing: [] });
   const [notifications, setNotifications] = useState<any[]>([]);
   const [dashboard, setDashboard] = useState<any[]>([]);
@@ -19,18 +20,26 @@ export default function GuardianHub() {
   const leafletMap = useRef<L.Map | null>(null);
   const markerRef = useRef<L.CircleMarker | null>(null);
 
+  // Phone guardian form
+  const [showPhoneForm, setShowPhoneForm] = useState(false);
+  const [phoneName, setPhoneName] = useState('');
+  const [phoneNumber, setPhoneNumber] = useState('');
+  const [addingPhone, setAddingPhone] = useState(false);
+
   const { socket } = useSocket();
   const { showToast } = useToast();
 
   const loadData = async () => {
     try {
-      const [g, p, n, d] = await Promise.all([
+      const [g, pg, p, n, d] = await Promise.all([
         guardianApi.myGuardians(),
+        guardianApi.phoneGuardians().catch(() => ({ guardians: [] })),
         guardianApi.pending(),
         guardianApi.notifications(),
         guardianApi.dashboard().catch(() => ({ dashboard: [] })),
       ]);
       setGuardians(g.guardians || []);
+      setPhoneGuardians(pg.guardians || []);
       setPending({ incoming: p.incoming || [], outgoing: p.outgoing || [] });
       setNotifications(n.notifications || []);
       setDashboard(d.dashboard || []);
@@ -40,12 +49,11 @@ export default function GuardianHub() {
 
   useEffect(() => { loadData(); }, []);
 
-  // Real-time updates via WebSocket (replaces 15s polling)
+  // Real-time updates via WebSocket
   useEffect(() => {
     if (!socket) return;
 
     const handleSOSTriggered = () => {
-      // Refresh dashboard immediately when SOS is triggered
       guardianApi.dashboard().then(d => setDashboard(d.dashboard || [])).catch(() => {});
       guardianApi.notifications().then(n => setNotifications(n.notifications || [])).catch(() => {});
     };
@@ -56,7 +64,6 @@ export default function GuardianHub() {
     };
 
     const handleLocationUpdate = (data: any) => {
-      // Update tracking map in real-time
       if (trackingUser && data.userId === trackingUser.userId) {
         setTrackingUser((prev: any) => prev ? ({
           ...prev,
@@ -66,7 +73,6 @@ export default function GuardianHub() {
         }) : prev);
       }
 
-      // Update dashboard location
       setDashboard(prev =>
         prev.map(u =>
           u.protectedId === data.userId
@@ -76,25 +82,40 @@ export default function GuardianHub() {
       );
     };
 
+    const handleMediaCaptured = (data: any) => {
+      setDashboard(prev =>
+        prev.map(u => ({
+          ...u,
+          activeIncidents: (u.activeIncidents || []).map((inc: any) =>
+            inc.incidentId === data.incidentId
+              ? { ...inc, mediaUrl: data.mediaUrl, mediaType: data.mediaType }
+              : inc
+          ),
+        }))
+      );
+    };
+
     socket.on('sos:triggered', handleSOSTriggered);
     socket.on('sos:cancelled', handleSOSResolved);
     socket.on('sos:resolved', handleSOSResolved);
     socket.on('location:update', handleLocationUpdate);
+    socket.on('sos:media-captured', handleMediaCaptured);
 
     return () => {
       socket.off('sos:triggered', handleSOSTriggered);
       socket.off('sos:cancelled', handleSOSResolved);
       socket.off('sos:resolved', handleSOSResolved);
       socket.off('location:update', handleLocationUpdate);
+      socket.off('sos:media-captured', handleMediaCaptured);
     };
   }, [socket, trackingUser]);
 
-  // Fallback polling every 30s (in case WebSocket is disconnected)
+  // Fallback polling every 60s
   useEffect(() => {
     const interval = setInterval(() => {
       guardianApi.notifications().then(n => setNotifications(n.notifications || [])).catch(() => {});
       guardianApi.dashboard().then(d => setDashboard(d.dashboard || [])).catch(() => {});
-    }, 30000);
+    }, 60000);
     return () => clearInterval(interval);
   }, []);
 
@@ -117,6 +138,30 @@ export default function GuardianHub() {
     }
   };
 
+  const handleAddPhone = async () => {
+    if (!phoneName.trim() || !phoneNumber.trim()) {
+      showToast('Name and phone are required', 'error');
+      return;
+    }
+    setAddingPhone(true);
+    try {
+      await guardianApi.addPhone(phoneName.trim(), phoneNumber.trim());
+      showToast(`Added ${phoneName} as phone guardian!`);
+      setPhoneName('');
+      setPhoneNumber('');
+      setShowPhoneForm(false);
+      loadData();
+    } catch (err: any) {
+      showToast(err.message || 'Failed to add', 'error');
+    } finally {
+      setAddingPhone(false);
+    }
+  };
+
+  const handleRemovePhone = async (id: string) => {
+    try { await guardianApi.removePhone(id); showToast('Removed'); loadData(); } catch { showToast('Failed', 'error'); }
+  };
+
   const handleConfirm = async (linkId: string) => {
     try { await guardianApi.confirm(linkId); showToast('Guardian confirmed!'); loadData(); } catch { showToast('Failed', 'error'); }
   };
@@ -127,7 +172,6 @@ export default function GuardianHub() {
     try { await guardianApi.remove(linkId); showToast('Removed'); loadData(); } catch { showToast('Failed', 'error'); }
   };
 
-  // Open tracking map for a protected user
   const openTracking = async (userId: string, name: string) => {
     try {
       const loc = await locationApi.live(userId);
@@ -147,7 +191,6 @@ export default function GuardianHub() {
     }).setView([trackingUser.lat || 20.5937, trackingUser.lng || 78.9629], trackingUser.lat ? 15 : 5);
 
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(leafletMap.current);
-    // Force layout recalc after WebView renders the modal
     setTimeout(() => leafletMap.current?.invalidateSize(), 150);
 
     if (trackingUser.lat && trackingUser.lng) {
@@ -171,6 +214,7 @@ export default function GuardianHub() {
     }
   }, [trackingUser?.lat, trackingUser?.lng]);
 
+  const totalGuardians = guardians.length + phoneGuardians.length;
   const dangerUsers = dashboard.filter((d: any) => d.hasActiveIncident);
   const unreadCount = notifications.filter((n: any) => !n.read).length;
 
@@ -192,7 +236,6 @@ export default function GuardianHub() {
               {trackingUser.lat && ` • ${trackingUser.lat.toFixed(4)}, ${trackingUser.lng?.toFixed(4)}`}
             </div>
           )}
-          {/* Quick actions in tracking */}
           <div style={{ display: 'flex', gap: 8, paddingBottom: 16 }}>
             <button className="btn btn-primary btn-sm" style={{ flex: 1 }} onClick={() => {
               if (trackingUser.lat) window.open(`https://www.google.com/maps?q=${trackingUser.lat},${trackingUser.lng}`, '_blank');
@@ -238,7 +281,7 @@ export default function GuardianHub() {
         </div>
       )}
 
-      {/* Invite */}
+      {/* Invite by email */}
       <div className="invite-row">
         <input className="input" placeholder="Enter guardian's email" value={email}
           onChange={e => setEmail(e.target.value)} type="email" />
@@ -250,7 +293,7 @@ export default function GuardianHub() {
       {/* Tabs */}
       <div className="tabs">
         <button className={`tab ${tab === 'guardians' ? 'active' : ''}`} onClick={() => setTab('guardians')}>
-          Guardians ({guardians.length})
+          Guardians ({totalGuardians})
         </button>
         <button className={`tab ${tab === 'dashboard' ? 'active' : ''}`} onClick={() => setTab('dashboard')}>
           Dashboard ({dashboard.length})
@@ -271,24 +314,73 @@ export default function GuardianHub() {
           {/* Guardians Tab */}
           {tab === 'guardians' && (
             <div className="guardian-list">
-              {guardians.length === 0 ? (
+              {/* In-app Guardians */}
+              {guardians.length > 0 && (
+                <>
+                  <div className="section-title" style={{ marginTop: 0, fontSize: 12, color: 'var(--text-muted)' }}>IN-APP GUARDIANS</div>
+                  {guardians.map((g: any) => (
+                    <div key={g.linkId} className="guardian-card">
+                      <div className="guardian-avatar">{g.name?.[0]?.toUpperCase() || '?'}</div>
+                      <div className="guardian-info">
+                        <div className="guardian-name">{g.name}</div>
+                        <div className="guardian-email">{g.email || g.phone || ''}</div>
+                      </div>
+                      <div className="guardian-actions">
+                        {g.phone && <a href={`tel:${g.phone}`} className="guardian-action-btn">📞</a>}
+                        <button className="guardian-action-btn" onClick={() => handleRemove(g.linkId)}>✕</button>
+                      </div>
+                    </div>
+                  ))}
+                </>
+              )}
+
+              {/* Phone-only Guardians */}
+              {phoneGuardians.length > 0 && (
+                <>
+                  <div className="section-title" style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: guardians.length > 0 ? 16 : 0 }}>PHONE GUARDIANS (SMS & Calls)</div>
+                  {phoneGuardians.map((g: any) => (
+                    <div key={g.id} className="guardian-card" style={{ borderLeft: '3px solid var(--info)' }}>
+                      <div className="guardian-avatar" style={{ background: 'linear-gradient(135deg, #3b82f6, #667eea)' }}>📞</div>
+                      <div className="guardian-info">
+                        <div className="guardian-name">{g.name}</div>
+                        <div className="guardian-email" style={{ color: 'var(--info)' }}>{g.phone}</div>
+                      </div>
+                      <div className="guardian-actions">
+                        <a href={`tel:${g.phone}`} className="guardian-action-btn">📞</a>
+                        <button className="guardian-action-btn" onClick={() => handleRemovePhone(g.id)}>✕</button>
+                      </div>
+                    </div>
+                  ))}
+                </>
+              )}
+
+              {/* Add Phone Guardian Button / Form */}
+              {showPhoneForm ? (
+                <div className="card" style={{ marginTop: 12, padding: 14 }}>
+                  <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 10 }}>➕ Add Phone Guardian</div>
+                  <input className="input" placeholder="Name (e.g. Dad)" value={phoneName}
+                    onChange={e => setPhoneName(e.target.value)} style={{ marginBottom: 8 }} />
+                  <input className="input" placeholder="Phone (e.g. +919876543210)" value={phoneNumber}
+                    onChange={e => setPhoneNumber(e.target.value)} type="tel" style={{ marginBottom: 10 }} />
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    <button className="btn btn-primary btn-sm" style={{ flex: 1 }} onClick={handleAddPhone} disabled={addingPhone}>
+                      {addingPhone ? <span className="spinner" style={{ width: 16, height: 16 }} /> : '✓ Add'}
+                    </button>
+                    <button className="btn btn-secondary btn-sm" style={{ flex: 1 }} onClick={() => setShowPhoneForm(false)}>Cancel</button>
+                  </div>
+                </div>
+              ) : (
+                <button className="btn btn-secondary btn-block" style={{ marginTop: 12 }} onClick={() => setShowPhoneForm(true)}>
+                  📞 Add Phone Guardian (SMS/Calls only)
+                </button>
+              )}
+
+              {totalGuardians === 0 && !showPhoneForm && (
                 <div className="empty-state">
                   <div className="emoji">🤝</div>
-                  <p>No guardians yet.<br />Enter an email above to invite someone!</p>
+                  <p>No guardians yet.<br />Invite by email above, or add a phone guardian below!</p>
                 </div>
-              ) : guardians.map((g: any) => (
-                <div key={g.linkId} className="guardian-card">
-                  <div className="guardian-avatar">{g.name?.[0]?.toUpperCase() || '?'}</div>
-                  <div className="guardian-info">
-                    <div className="guardian-name">{g.name}</div>
-                    <div className="guardian-email">{g.email || g.phone || ''}</div>
-                  </div>
-                  <div className="guardian-actions">
-                    {g.phone && <a href={`tel:${g.phone}`} className="guardian-action-btn">📞</a>}
-                    <button className="guardian-action-btn" onClick={() => handleRemove(g.linkId)}>✕</button>
-                  </div>
-                </div>
-              ))}
+              )}
             </div>
           )}
 
@@ -340,11 +432,20 @@ export default function GuardianHub() {
                         <img
                           src={u.activeIncidents[0].mediaUrl}
                           alt="Captured evidence"
-                          style={{ width: '100%', maxHeight: 140, objectFit: 'cover', display: 'block' }}
+                          style={{ width: '100%', maxHeight: 140, objectFit: 'cover', display: 'block', cursor: 'pointer' }}
+                          onClick={() => window.open(u.activeIncidents[0].mediaUrl, '_blank')}
                         />
                       )}
-                      <div style={{ padding: '4px 8px', fontSize: 11, color: 'var(--text-muted)', background: 'var(--bg-card)' }}>
-                        📎 Evidence captured
+                      <div style={{ padding: '6px 8px', background: 'var(--bg-card)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                        <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>📎 Evidence captured</span>
+                        <a
+                          href={u.activeIncidents[0].mediaUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          style={{ fontSize: 11, color: 'var(--accent)', fontWeight: 700, textDecoration: 'none' }}
+                        >
+                          Open ↗
+                        </a>
                       </div>
                     </div>
                   )}

@@ -3,6 +3,8 @@ import { firestore } from "../config/firebase";
 
 const MAX_UPLOAD_RETRIES = 2;
 
+type EvidenceType = "image" | "video" | "audio";
+
 /**
  * Upload a media buffer to Cloudinary with retry logic.
  * Returns the secure URL and metadata.
@@ -10,7 +12,7 @@ const MAX_UPLOAD_RETRIES = 2;
 export async function uploadMediaToCloudinary(
   buffer: Buffer,
   incidentId: string,
-  type: "image" | "video" | "audio" = "image",
+  type: EvidenceType = "image",
   attempt = 0
 ): Promise<{
   url: string;
@@ -56,7 +58,7 @@ export async function uploadMediaToCloudinary(
 export async function storeEvidence(
   userId: string,
   incidentId: string,
-  type: "image" | "video" | "audio",
+  type: EvidenceType,
   url: string,
   publicId: string,
   format: string
@@ -71,18 +73,10 @@ export async function storeEvidence(
     createdAt: new Date().toISOString(),
   });
 
-  // Also attach the media URL to the incident document
-  await firestore
-    .collection("incidents")
-    .doc(incidentId)
-    .update({
-      mediaUrl: url,
-      mediaType: type,
-      mediaUpdatedAt: new Date().toISOString(),
-    })
-    .catch((err) => {
-      console.error("[MEDIA] Failed to attach media to incident:", err);
-    });
+  // NOTE: Do NOT update the incident document here.
+  // The caller (uploadAndStoreEvidence → attachMediaToIncident) handles
+  // updating incident.mediaUrl and incident.evidenceLinks to avoid
+  // race conditions and duplicate writes.
 
   console.log(`[MEDIA] Evidence stored: ${docRef.id}`);
   return docRef.id;
@@ -95,7 +89,7 @@ export async function uploadAndStoreEvidence(
   userId: string,
   incidentId: string,
   buffer: Buffer,
-  type: "image" | "video" | "audio" = "image"
+  type: EvidenceType = "image"
 ): Promise<string | null> {
   const uploaded = await uploadMediaToCloudinary(buffer, incidentId, type);
   if (!uploaded) {

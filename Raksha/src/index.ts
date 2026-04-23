@@ -83,6 +83,7 @@ async function loadApp(): Promise<void> {
     { path: "/journey", mod: "./routes/journey" },
     { path: "/community", mod: "./routes/incidents" },
     { path: "/analytics", mod: "./routes/analytics" },
+    { path: "/safe-route", mod: "./routes/safe-route" }, // Safe Route microservice bridge
   ];
 
   for (const { path, mod } of routes) {
@@ -110,6 +111,25 @@ async function loadApp(): Promise<void> {
     console.log("[RAKSHA] Escalation recovery complete");
   } catch (err) {
     console.error("[RAKSHA] Escalation recovery failed:", err);
+  }
+
+  // Auto-start local Python Safe Route microservice (non-blocking).
+  try {
+    const { startSafeRouteProcess } = await import("./services/safeRouteProcess");
+    startSafeRouteProcess();
+    console.log("[RAKSHA] Safe Route Python autostart checked");
+  } catch (err) {
+    console.error("[RAKSHA] Safe Route Python autostart failed:", err);
+  }
+
+  // Server-side watcher: auto-SOS when Dead Man's Switch / Journey timers expire
+  // Catches expirations even when the user's browser tab is closed.
+  try {
+    const { startTimerWatcher } = await import("./services/timerWatcher");
+    startTimerWatcher();
+    console.log("[RAKSHA] Timer watcher started");
+  } catch (err) {
+    console.error("[RAKSHA] Timer watcher failed to start:", err);
   }
 
   console.log("[RAKSHA] All services initialised");

@@ -65,6 +65,12 @@ const escalateToStage = async (
 
     console.log(`[ESCALATION] Incident ${incidentId} escalated to stage ${stage}`);
 
+    // Emit real-time socket event to guardians + user
+    try {
+      const { emitEscalationUpdate } = await import("./socketManager");
+      emitEscalationUpdate(incidentData.userId, incidentId, stage);
+    } catch {}
+
     // If final stage reached → stop tracking
     if (stage === 4) {
       stopEscalation(incidentId);
@@ -79,8 +85,9 @@ const escalateToStage = async (
 
 /**
  * 🚀 Start escalation timeline
+ * Accepts an optional offsetMs to skip already-elapsed time (used during recovery).
  */
-export const startEscalation = (incidentId: string): void => {
+export const startEscalation = (incidentId: string, offsetMs = 0): void => {
   if (activeEscalations.has(incidentId)) {
     console.warn(`[ESCALATION] Already running: ${incidentId}`);
     return;
@@ -89,16 +96,24 @@ export const startEscalation = (incidentId: string): void => {
   const timeouts: NodeJS.Timeout[] = [];
 
   for (const { stage, delay } of ESCALATION_INTERVALS_MS) {
+    const remaining = delay - offsetMs;
+    if (remaining <= 0) continue; // stage already elapsed
+
     const timeout = setTimeout(async () => {
       await escalateToStage(incidentId, stage);
-    }, delay);
+    }, remaining);
 
     timeouts.push(timeout);
   }
 
+  if (timeouts.length === 0) {
+    console.log(`[ESCALATION] All stages already elapsed for: ${incidentId}`);
+    return;
+  }
+
   activeEscalations.set(incidentId, timeouts);
 
-  console.log(`[ESCALATION] Timeline started: ${incidentId}`);
+  console.log(`[ESCALATION] Timeline started: ${incidentId} (offset ${offsetMs}ms)`);
 };
 
 /**
@@ -127,7 +142,8 @@ export const isEscalationActive = (incidentId: string): boolean => {
 
 /**
  * ♻️ Recover escalation after server restart
- * Re-start timelines for all active incidents
+ * Re-start timelines for all active incidents, accounting for elapsed time
+ * so stages that should have already fired are skipped.
  */
 export const resumeActiveEscalations = async (): Promise<void> => {
   try {
@@ -145,7 +161,13 @@ export const resumeActiveEscalations = async (): Promise<void> => {
 
       // Only restart if not fully escalated
       if (currentStage < 4) {
-        startEscalation(doc.id);
+        // Calculate elapsed time since incident creation
+        const createdAt = data.createdAt || data.timestamp;
+        let elapsedMs = 0;
+        if (createdAt) {
+          elapsedMs = Math.max(0, Date.now() - new Date(createdAt).getTime());
+        }
+        startEscalation(doc.id, elapsedMs);
       }
     });
 
@@ -153,4 +175,4 @@ export const resumeActiveEscalations = async (): Promise<void> => {
   } catch (err) {
     console.error("[ESCALATION] Failed to resume escalations:", err);
   }
-};
+};
